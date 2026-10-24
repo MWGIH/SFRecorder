@@ -1,0 +1,54 @@
+# Builds SFRecorder and its private FFmpeg for the Steam Frame (aarch64) and
+# attaches both to a GitHub release, where install.sh downloads them from.
+#
+# Push a tag like v0.1.0 for a release, or run it by hand (Actions tab) to
+# make a test pre-release.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create or update"
+        default: "test"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # Older Ubuntu = older glibc, so the binaries also run on older systems.
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config clang libclang-dev glslang-tools \
+            libvulkan-dev libdrm-dev libpulse-dev curl xz-utils
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build FFmpeg (AAC + MP4 only)
+        run: scripts/build-ffmpeg.sh
+
+      - name: Build SFRecorder against it
+        run: PKG_CONFIG_PATH="$PWD/build/ffmpeg/lib/pkgconfig" cargo build --release --locked
+
+      - name: Package
+        run: |
+          tar -czf sfrecorder-aarch64.tar.gz -C target/release sfrecorder sfrecorder-grab
+          ls -la *.tar.gz
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then pre=--prerelease; else pre=; fi
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" $pre --target "$GITHUB_SHA" --title "$TAG" --notes "Built from $GITHUB_SHA"
+          gh release upload "$TAG" sfrecorder-aarch64.tar.gz ffmpeg-libs-aarch64.tar.gz --clobber

@@ -82,6 +82,17 @@ scripts/build-ffmpeg.sh
 PKG_CONFIG_PATH=build/ffmpeg/lib/pkgconfig cargo build --release
 ```
 
+### Releases
+
+`.github/workflows/release.yml` builds the engine and the private FFmpeg for
+the Frame (aarch64) on GitHub and attaches both to a release. Push a `v*` tag
+for a release, or run the workflow by hand from the Actions tab for a test
+pre-release (tag `test`). To install a test build:
+
+```sh
+SFRECORDER_TAG=test ./install.sh
+```
+
 ## To check on the headset
 
 - The 16:9 crop matches Steam's recorder, and the eyes are the right way up.

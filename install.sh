@@ -5,7 +5,12 @@ set -euo pipefail
 
 PYOPENVR_VERSION="2.12.1401"
 OPENVR_TAG="v2.12.14"   # matches the pyopenvr version above
-RELEASES="https://github.com/MWGIH/SFRecorder/releases/latest/download"
+# SFRECORDER_TAG=test ./install.sh installs a test build instead of the latest release.
+if [ -n "${SFRECORDER_TAG:-}" ]; then
+    RELEASES="https://github.com/MWGIH/SFRecorder/releases/download/$SFRECORDER_TAG"
+else
+    RELEASES="https://github.com/MWGIH/SFRecorder/releases/latest/download"
+fi
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHARE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/sfrecorder"
