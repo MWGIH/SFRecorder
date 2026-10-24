@@ -320,10 +320,14 @@ class Menu:
 
     @staticmethod
     def thumbnail():
-        img = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
-        draw.ellipse((68, 68, 188, 188), fill=Menu.REC)
-        return img
+        """The dashboard icon: a red record dot filling the tile, on a fully
+        transparent background so it sits on the dashboard's own colour.
+        Drawn 4x larger and scaled down for smooth edges."""
+        size, scale = 256, 4
+        big = Image.new("RGBA", (size * scale, size * scale), (0, 0, 0, 0))
+        margin = 10 * scale
+        ImageDraw.Draw(big).ellipse((margin, margin, size * scale - margin, size * scale - margin), fill=Menu.REC)
+        return big.resize((size, size), Image.LANCZOS)
 
 
 def format_time(seconds):
