@@ -12,6 +12,7 @@ pub mod gpu;
 pub mod grab;
 pub mod kms;
 pub mod lens;
+pub mod mirror;
 pub mod openvr;
 pub mod writer;
 

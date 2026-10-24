@@ -69,6 +69,14 @@ fn parse_args() -> Result<Args> {
             "--hud" => a.hud = value()? != "hide",
             "--out" => a.out = Some(PathBuf::from(value()?)),
             "--card" => a.card = PathBuf::from(value()?),
+            "--probe-mirror" => {
+                let dir = default_output()?.parent().unwrap().to_path_buf();
+                if let Err(e) = sfrecorder::mirror::probe(&dir) {
+                    eprintln!("mirror test failed: {e:#}");
+                    std::process::exit(1);
+                }
+                std::process::exit(0);
+            }
             "-h" | "--help" => {
                 println!("usage: sfrecorder [--shape 16:9|raw] [--eye left|right|auto] [--mic] [--hud show|hide] [--out FILE]");
                 std::process::exit(0);

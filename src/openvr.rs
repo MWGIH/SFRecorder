@@ -18,6 +18,9 @@ const SETTINGS: &str = "IVRSettings_003";
 const SETTINGS_GET_INT32: usize = 6;
 const HEADSET_VIEW: &str = "IVRHeadsetView_001";
 const HEADSET_VIEW_GET_MODE: usize = 3;
+pub const COMPOSITOR: &str = "IVRCompositor_029";
+// EVRApplicationType_VRApplication_Overlay: what the mirror test connects as.
+pub const APP_OVERLAY: i32 = 2;
 
 type InitFn = unsafe extern "C" fn(*mut i32, i32) -> isize;
 type GetInterfaceFn = unsafe extern "C" fn(*const c_char, *mut i32) -> isize;
@@ -42,12 +45,17 @@ pub struct OpenVr {
 impl OpenVr {
     /// Connects to a SteamVR that is already running.
     pub fn connect() -> Result<Self> {
+        Self::connect_as(APP_BACKGROUND)
+    }
+
+    /// Connects as the given application type (SteamVR must already run).
+    pub fn connect_as(app_type: i32) -> Result<Self> {
         let lib = open_library().context("libopenvr_api.so not found, run the installer again")?;
         unsafe {
             let init: InitFn = symbol(lib, c"VR_InitInternal")?;
             let get_interface: GetInterfaceFn = symbol(lib, c"VR_GetGenericInterface")?;
             let mut err = 0;
-            init(&mut err, APP_BACKGROUND);
+            init(&mut err, app_type);
             if err != 0 {
                 libc::dlclose(lib);
                 bail!("SteamVR isn't running (OpenVR error {err})");
@@ -61,7 +69,7 @@ impl OpenVr {
         }
     }
 
-    fn table(&self, version: &str) -> Option<*const *const c_void> {
+    pub fn table(&self, version: &str) -> Option<*const *const c_void> {
         let name = CString::new(format!("FnTable:{version}")).ok()?;
         let mut err = 0;
         let table = unsafe { (self.get_interface)(name.as_ptr(), &mut err) };
@@ -141,6 +149,9 @@ unsafe fn symbol<T: Copy>(lib: *mut c_void, name: &CStr) -> Result<T> {
     Ok(std::mem::transmute_copy(&p))
 }
 
-unsafe fn slot<T: Copy>(table: *const *const c_void, index: usize) -> T {
+/// # Safety
+/// `table` must be a live OpenVR function table with at least `index + 1`
+/// entries, and `T` the function type of that entry.
+pub unsafe fn slot<T: Copy>(table: *const *const c_void, index: usize) -> T {
     std::mem::transmute_copy(&*table.add(index))
 }
