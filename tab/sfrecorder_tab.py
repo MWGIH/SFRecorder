@@ -14,6 +14,7 @@ import glob
 import json
 import os
 import queue
+import shlex
 import signal
 import subprocess
 import sys
@@ -30,6 +31,10 @@ CONFIG_FILE = os.path.join(CONFIG_DIR, "config.ini")
 ENGINE = os.path.join(HOME, ".local", "bin", "sfrecorder")
 OUTPUT_DIR = os.path.join(HOME, "Videos", "SFRecorder")
 # The recorder's own log of the last recording, for when something goes wrong.
+SOURCE_DIR_FILE = os.path.join(CONFIG_DIR, "source_dir")
+RELEASE_TAG_FILE = os.path.join(CONFIG_DIR, "release_tag")
+NEEDS_UNLOCK_FILE = os.path.join(CONFIG_DIR, "needs_unlock")
+UPDATE_LOG = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache")), "sfrecorder", "update.log")
 LOG_FILE = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache")), "sfrecorder", "last-recording.log")
 
 # SFrameOverlay, if it's installed: its install folder and its on/off file.
@@ -74,6 +79,12 @@ def read_text(path):
             return f.read().strip()
     except OSError:
         return None
+
+
+def run_detached(command):
+    """Runs a shell command in its own systemd scope, so it survives this tab being restarted."""
+    subprocess.Popen(["systemd-run", "--user", "--collect", "/bin/bash", "-c", command],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def to_texture(img):
@@ -280,6 +291,8 @@ class Menu:
         if recording:
             draw.text((self.WIDTH // 2, 840), "Paused while this menu is open", font=self.small_font, fill=YELLOW,
                       anchor="mm")
+        else:
+            self._button(draw, (250, 805, 550, 870), "Update", "update")
 
         if popup == "eye":
             lines = wrap(draw, EYE_HELP, self.small_font, 600)
@@ -387,6 +400,18 @@ def run():
             popup = "eye" if eye_popup_pinned else None
         elif action == "mic":
             settings.mic = not settings.mic
+        elif action == "update":
+            source = read_text(SOURCE_DIR_FILE)
+            if engine:
+                status = "! Stop recording first to update"
+            elif not (source and os.path.isdir(os.path.join(source, ".git"))):
+                status = "! Update needs the folder the install line made"
+            else:
+                tag = read_text(RELEASE_TAG_FILE) or ""
+                os.makedirs(os.path.dirname(UPDATE_LOG), exist_ok=True)
+                status = "Updating... this tab will restart"
+                run_detached(f"cd {shlex.quote(source)} && git pull --ff-only && "
+                             f"SFRECORDER_TAG={shlex.quote(tag)} ./install.sh </dev/null >{shlex.quote(UPDATE_LOG)} 2>&1")
         elif action == "hud":
             settings.hud = not settings.hud
             if engine:
@@ -396,6 +421,8 @@ def run():
         settings.save()
         redraw()
 
+    if os.path.exists(NEEDS_UNLOCK_FILE):
+        status = "! Updated: run the install line in a terminal once to unlock the panels"
     redraw()
     while True:
         now = time.monotonic()

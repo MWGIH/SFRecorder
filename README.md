@@ -52,6 +52,7 @@ To remove it: `~/.local/share/sfrecorder/uninstall.sh` (recordings are kept).
 | **Shape** | **16:9** (default) frames one eye like Steam's own recorder. **Raw** records both panels exactly as shown; it asks you to confirm the first time and then shows ⚠ next to Shape. |
 | **Eye** | Left or right for 16:9. It follows the eye picked in SteamVR's VR View window until you change it here; the **i** explains where that setting is. |
 | **Microphone** | Off by default. When on, your voice is mixed into the game audio. |
+| **Update** | Pulls the latest version from the folder the install line made and reinstalls. Not available while recording. It only asks for the password again (in a terminal) if the panel helper itself changed. |
 | **FPS overlay** | Shows whether [SFrameOverlay](https://github.com/MWGIH/SFrameOverlay) is installed and on. When it is, choose whether its HUD is in recordings. Hiding it also hides it in the headset while recording, because the panels are recorded as shown. |
 
 Game audio is always recorded. Recordings go to `~/Videos/SFRecorder` as

@@ -18,6 +18,8 @@ LIB_DIR="$HOME/.local/lib/sfrecorder"
 BIN_DIR="$HOME/.local/bin"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 VENV="$SHARE_DIR/venv"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/sfrecorder"
+HELPER="$LIB_DIR/sfrecorder-grab"
 
 case "$(uname -m)" in
     aarch64) OPENVR_ARCH="linuxarm64" ;;
@@ -25,7 +27,10 @@ case "$(uname -m)" in
     *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
-mkdir -p "$SHARE_DIR" "$LIB_DIR" "$BIN_DIR" "$UNIT_DIR" "$HOME/Videos/SFRecorder"
+mkdir -p "$SHARE_DIR" "$LIB_DIR" "$BIN_DIR" "$UNIT_DIR" "$CONFIG_DIR" "$HOME/Videos/SFRecorder"
+# Lets the tab's Update button find this checkout and the build it came from.
+echo "$SRC_DIR" > "$CONFIG_DIR/source_dir"
+echo "${SFRECORDER_TAG:-}" > "$CONFIG_DIR/release_tag"
 
 echo "==> Installing the recorder"
 if [ -x "$SRC_DIR/target/release/sfrecorder" ]; then
@@ -36,7 +41,14 @@ else
     curl -fsSL "$RELEASES/sfrecorder-$(uname -m).tar.gz" | tar -xz -C "$BUILD"
 fi
 install -m 755 "$BUILD/sfrecorder" "$BIN_DIR/sfrecorder"
-install -m 755 "$BUILD/sfrecorder-grab" "$LIB_DIR/sfrecorder-grab"
+# Rewriting the helper would drop its unlock, so it's only replaced when it
+# actually changed; most updates then need no password.
+if [ -f "$HELPER" ] && cmp -s "$BUILD/sfrecorder-grab" "$HELPER"; then
+    HELPER_CHANGED=0
+else
+    install -m 755 "$BUILD/sfrecorder-grab" "$HELPER"
+    HELPER_CHANGED=1
+fi
 # FFmpeg (for the MP4 file and AAC audio): use SteamOS's own if the recorder
 # can load it, otherwise a small private copy kept with the recorder. SteamOS's
 # system folders are read-only and reset by updates, so nothing goes there.
@@ -73,10 +85,20 @@ cp "$LIB_DIR/libopenvr_api.so" "$PKG_DIR/libopenvr_api_64.so"
 
 # Reading what the panels show needs one capability, given only to the small
 # helper that hands the recorder the on-screen buffer.
-echo "==> Unlocking the panels (asks for your password)"
-if ! sudo setcap cap_sys_admin+ep "$LIB_DIR/sfrecorder-grab"; then
-    echo "Couldn't unlock the panels. Set a password with 'passwd' and run this again." >&2
-    exit 1
+if [ "$HELPER_CHANGED" = 0 ] && getcap "$HELPER" 2>/dev/null | grep -q cap_sys_admin; then
+    echo "==> Panels already unlocked"
+    rm -f "$CONFIG_DIR/needs_unlock"
+elif [ -t 0 ]; then
+    echo "==> Unlocking the panels (asks for your password)"
+    if ! sudo setcap cap_sys_admin+ep "$HELPER"; then
+        echo "Couldn't unlock the panels. Set a password with 'passwd' and run this again." >&2
+        exit 1
+    fi
+    rm -f "$CONFIG_DIR/needs_unlock"
+else
+    # Updating from the tab: no terminal to ask for the password in.
+    echo "==> The panels need unlocking again: run the install line in a terminal"
+    touch "$CONFIG_DIR/needs_unlock"
 fi
 
 echo "==> Installing background service"
