@@ -89,7 +89,7 @@ pub fn run(card: &Path, out_dir: &Path) -> Result<()> {
 
     say!("3. GPU conversion into the GPU's own memory");
     let mut working: Option<Gpu> = None;
-    for low in [true, false] {
+    for low in [false, true] {
         let mut gpu = match Gpu::with_priority(&grid, W, H, low) {
             Ok(g) => g,
             Err(e) => {
