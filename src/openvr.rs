@@ -14,6 +14,7 @@ const APP_BACKGROUND: i32 = 3;
 const SYSTEM_VERSIONS: [&str; 6] = ["IVRSystem_026", "IVRSystem_025", "IVRSystem_023", "IVRSystem_022", "IVRSystem_021", "IVRSystem_020"];
 const SYSTEM_PROJECTION_RAW: usize = 2;
 const SYSTEM_COMPUTE_DISTORTION: usize = 3;
+const SYSTEM_EYE_TO_HEAD: usize = 4;
 const SETTINGS: &str = "IVRSettings_003";
 const SETTINGS_GET_INT32: usize = 6;
 const HEADSET_VIEW: &str = "IVRHeadsetView_001";
@@ -21,6 +22,8 @@ const HEADSET_VIEW_GET_MODE: usize = 3;
 pub const COMPOSITOR: &str = "IVRCompositor_029";
 // EVRApplicationType_VRApplication_Overlay: what the mirror test connects as.
 pub const APP_OVERLAY: i32 = 2;
+
+pub const IDENTITY: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
 type InitFn = unsafe extern "C" fn(*mut i32, i32) -> isize;
 type GetInterfaceFn = unsafe extern "C" fn(*const c_char, *mut i32) -> isize;
@@ -83,6 +86,26 @@ impl OpenVr {
             f(eye as i32, &mut l, &mut r, &mut t, &mut b);
         }
         Frustum { left: l as f64, right: r as f64, top: t as f64, bottom: b as f64 }
+    }
+
+    /// How the eye's rendered image is turned against the head (rows of a
+    /// rotation matrix, head = R * eye). Canted panels show up here.
+    pub fn eye_rotation(&self, eye: usize) -> [[f64; 3]; 3] {
+        #[repr(C)]
+        struct Matrix34 {
+            m: [[f32; 4]; 3],
+        }
+        let m = unsafe {
+            let f: unsafe extern "C" fn(i32) -> Matrix34 = slot(self.system, SYSTEM_EYE_TO_HEAD);
+            f(eye as i32)
+        };
+        let r = |i: usize| [m.m[i][0] as f64, m.m[i][1] as f64, m.m[i][2] as f64];
+        let rot = [r(0), r(1), r(2)];
+        if rot.iter().flatten().all(|v| v.is_finite()) && rot.iter().flatten().any(|v| *v != 0.0) {
+            rot
+        } else {
+            IDENTITY
+        }
     }
 
     /// For a point on one eye's panel (0..1 across that eye), the point of the

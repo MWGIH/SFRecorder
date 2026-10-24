@@ -161,7 +161,7 @@ pub fn framed(vr: &OpenVr, eye: usize, out_w: u32, out_h: u32, zoom: f64) -> Res
         bail!("SteamVR's view for this eye makes no sense ({f:?})");
     }
     let forward = Forward::sample(vr, eye)?;
-    let g = framed_with(&forward, f, eye, out_w, out_h, zoom);
+    let g = framed_with(&forward, f, head_rotation(vr, eye), eye, out_w, out_h, zoom);
     // Lens data the maths can't invert sends every pixel to the panel's
     // black edge; a recording of nothing is worse than an un-warped crop.
     let centre = g.at(out_w / 2, out_h / 2);
@@ -201,11 +201,70 @@ pub fn plain(out_w: u32, out_h: u32, eye: usize, panel: (u32, u32), f: Frustum) 
     g
 }
 
-fn framed_with(forward: &Forward, f: Frustum, eye: usize, out_w: u32, out_h: u32, zoom: f64) -> Grid {
-    let (cx, cy) = ((f.left + f.right) / 2.0, (f.top + f.bottom) / 2.0);
+/// The eye's turn against the head, plus SFRECORDER_ROLL (degrees) if set,
+/// for checking the levelling by hand.
+pub fn head_rotation(vr: &OpenVr, eye: usize) -> [[f64; 3]; 3] {
+    let r = vr.eye_rotation(eye);
+    match std::env::var("SFRECORDER_ROLL").ok().and_then(|v| v.parse::<f64>().ok()) {
+        Some(deg) => {
+            let (s, c) = deg.to_radians().sin_cos();
+            let z = [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]];
+            let mut out = [[0.0; 3]; 3];
+            for (i, row) in out.iter_mut().enumerate() {
+                for (j, v) in row.iter_mut().enumerate() {
+                    *v = (0..3).map(|k| z[i][k] * r[k][j]).sum();
+                }
+            }
+            out
+        }
+        None => r,
+    }
+}
+
+/// The eye's roll against the head in degrees, for the log.
+pub fn roll_degrees(r: &[[f64; 3]; 3]) -> f64 {
+    r[1][0].atan2(r[0][0]).to_degrees()
+}
+
+/// Image tangents (x right, y down) between head and eye space.
+fn to_eye(r: &[[f64; 3]; 3], h: [f64; 2]) -> [f64; 2] {
+    let d = [h[0], -h[1], -1.0];
+    // eye = R^T * head
+    let e: Vec<f64> = (0..3).map(|j| (0..3).map(|i| r[i][j] * d[i]).sum()).collect();
+    [e[0] / -e[2], -e[1] / -e[2]]
+}
+
+fn to_head(r: &[[f64; 3]; 3], t: [f64; 2]) -> [f64; 2] {
+    let d = [t[0], -t[1], -1.0];
+    let h: Vec<f64> = (0..3).map(|i| (0..3).map(|j| r[i][j] * d[j]).sum()).collect();
+    [h[0] / -h[2], -h[1] / -h[2]]
+}
+
+/// Steam's recorder keeps the picture level with the head. On canted panels
+/// the eye's image is turned, so the output is laid out in head space,
+/// centred where the eye looks, and shrunk until it fits inside the eye's view.
+fn framed_with(forward: &Forward, f: Frustum, rot: [[f64; 3]; 3], eye: usize, out_w: u32, out_h: u32, zoom: f64) -> Grid {
+    let (ecx, ecy) = ((f.left + f.right) / 2.0, (f.top + f.bottom) / 2.0);
+    let [cx, cy] = to_head(&rot, [ecx, ecy]);
     let (hw, hh) = ((f.right - f.left) / 2.0, (f.bottom - f.top) / 2.0);
     let aspect = out_w as f64 / out_h as f64;
     let (mut half_w, mut half_h) = if hw / hh > aspect { (hh * aspect, hh) } else { (hw, hw / aspect) };
+    let inside = |hw: f64, hh: f64| {
+        (0..=8).all(|k| {
+            let a = k as f64 / 8.0 * 2.0 - 1.0;
+            [[a, -1.0], [a, 1.0], [-1.0, a], [1.0, a]].iter().all(|&[sx, sy]| {
+                let [tx, ty] = to_eye(&rot, [cx + sx * hw, cy + sy * hh]);
+                tx >= f.left - 1e-6 && tx <= f.right + 1e-6 && ty >= f.top - 1e-6 && ty <= f.bottom + 1e-6
+            })
+        })
+    };
+    for _ in 0..100 {
+        if inside(half_w, half_h) {
+            break;
+        }
+        half_w *= 0.99;
+        half_h *= 0.99;
+    }
     half_w /= zoom;
     half_h /= zoom;
 
@@ -217,8 +276,7 @@ fn framed_with(forward: &Forward, f: Frustum, eye: usize, out_w: u32, out_h: u32
     let mut good = 0usize;
     let cells = g.cells().collect::<Vec<_>>();
     for &(idx, x, y) in &cells {
-        let tx = cx + (x / out_w as f64 * 2.0 - 1.0) * half_w;
-        let ty = cy + (y / out_h as f64 * 2.0 - 1.0) * half_h;
+        let [tx, ty] = to_eye(&rot, [cx + (x / out_w as f64 * 2.0 - 1.0) * half_w, cy + (y / out_h as f64 * 2.0 - 1.0) * half_h]);
         let target = [(tx - f.left) / (f.right - f.left), (ty - f.top) / (f.bottom - f.top)];
         let mut panel = [[0.0; 2]; 3];
         for c in [1, 0, 2] {
@@ -284,10 +342,29 @@ mod tests {
     fn framing_lands_inside_the_eye() {
         let f = Frustum { left: -1.661, right: 1.217, top: -1.735, bottom: 1.171 };
         for eye in [0, 1] {
-            let g = framed_with(&barrel(), f, eye, 1920, 1080, 1.0);
+            let g = framed_with(&barrel(), f, crate::openvr::IDENTITY, eye, 1920, 1080, 1.0);
             assert!(g.converged > 0.95, "{}", g.converged);
             assert!(inside_eye(eye, g.at(960, 540)), "{:?}", g.at(960, 540));
         }
+    }
+
+    #[test]
+    fn rolled_eye_is_levelled() {
+        let (s, c) = 10f64.to_radians().sin_cos();
+        let rot = [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]];
+        let f = Frustum { left: -1.2, right: 1.2, top: -1.2, bottom: 1.2 };
+        // A level head line maps to a line tilted by the roll in the eye.
+        let (a, b) = (to_eye(&rot, [-0.5, 0.0]), to_eye(&rot, [0.5, 0.0]));
+        let tilt = (b[1] - a[1]).atan2(b[0] - a[0]).to_degrees();
+        assert!((tilt.abs() - 10.0).abs() < 0.01, "{tilt}");
+        let back = to_head(&rot, to_eye(&rot, [0.3, -0.2]));
+        assert!((back[0] - 0.3).abs() < 1e-9 && (back[1] + 0.2).abs() < 1e-9);
+        assert!((roll_degrees(&rot) - 10.0).abs() < 1e-9);
+        let level = framed_with(&barrel(), f, crate::openvr::IDENTITY, 0, 1920, 1080, 1.0);
+        let rolled = framed_with(&barrel(), f, rot, 0, 1920, 1080, 1.0);
+        // Turned, the picture has to be cropped tighter to stay inside the eye.
+        assert!(rolled.view[1] + rolled.view[0] < level.view[1] + level.view[0]);
+        assert!(rolled.converged > 0.95);
     }
 
     #[test]
@@ -295,7 +372,7 @@ mod tests {
         let n = FORWARD_SAMPLES;
         let fwd = Forward { samples: vec![[[f32::NAN; 2]; 3]; n * n] };
         let f = Frustum { left: -1.0, right: 1.0, top: -1.0, bottom: 1.0 };
-        let g = framed_with(&fwd, f, 0, 1920, 1080, 1.0);
+        let g = framed_with(&fwd, f, crate::openvr::IDENTITY, 0, 1920, 1080, 1.0);
         assert!(g.converged < MIN_CONVERGED);
         assert!(g.points.iter().all(|p| p[0].is_finite() && p[1].is_finite()));
     }
