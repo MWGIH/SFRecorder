@@ -1,0 +1,79 @@
+#version 450
+// One pass per recorded frame: for each 4x2 block of output pixels, look up
+// where each pixel comes from on the panel (interpolating the precomputed
+// grid), read the scanout there, and write BT.709 limited-range NV12 straight
+// into the encoder's input buffer.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0) uniform sampler2D scanout;
+layout(std430, binding = 1) readonly buffer Grid { vec2 points[]; };
+layout(std430, binding = 2) writeonly buffer Luma { uint luma[]; };
+layout(std430, binding = 3) writeonly buffer Chroma { uint chroma[]; };
+
+layout(push_constant) uniform Params {
+    uint out_w;
+    uint out_h;
+    uint luma_stride;    // bytes per row
+    uint chroma_stride;  // bytes per row
+    uint grid_w;
+    uint step;
+    uint per_channel;
+    uint luma_offset;    // bytes into the luma buffer
+    uint chroma_offset;  // bytes into the chroma buffer
+} p;
+
+vec2 grid_point(uint gx, uint gy, uint c) {
+    return points[(gy * p.grid_w + gx) * 3u + c];
+}
+
+vec2 lookup(vec2 px, uint c) {
+    vec2 g = px / float(p.step);
+    uvec2 i = uvec2(g);
+    vec2 f = g - vec2(i);
+    vec2 a = mix(grid_point(i.x, i.y, c), grid_point(i.x + 1u, i.y, c), f.x);
+    vec2 b = mix(grid_point(i.x, i.y + 1u, c), grid_point(i.x + 1u, i.y + 1u, c), f.x);
+    return mix(a, b, f.y);
+}
+
+vec3 pixel(uint x, uint y) {
+    vec2 px = vec2(x, y) + 0.5;
+    vec2 green = lookup(px, 1u);
+    if (p.per_channel == 0u) {
+        return textureLod(scanout, green, 0.0).rgb;
+    }
+    return vec3(textureLod(scanout, lookup(px, 0u), 0.0).r,
+                textureLod(scanout, green, 0.0).g,
+                textureLod(scanout, lookup(px, 2u), 0.0).b);
+}
+
+float to_y(vec3 c) { return 16.0 + 219.0 * dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+float to_u(vec3 c) { return 128.0 + 224.0 * dot(c, vec3(-0.1146, -0.3854, 0.5)); }
+float to_v(vec3 c) { return 128.0 + 224.0 * dot(c, vec3(0.5, -0.4542, -0.0458)); }
+
+uint pack4(vec4 v) {
+    uvec4 b = uvec4(clamp(round(v), 0.0, 255.0));
+    return b.x | (b.y << 8) | (b.z << 16) | (b.w << 24);
+}
+
+void main() {
+    uint x0 = gl_GlobalInvocationID.x * 4u;
+    uint y0 = gl_GlobalInvocationID.y * 2u;
+    if (x0 >= p.out_w || y0 >= p.out_h) {
+        return;
+    }
+    vec3 c[8];
+    for (uint j = 0u; j < 2u; j++) {
+        for (uint i = 0u; i < 4u; i++) {
+            c[j * 4u + i] = pixel(x0 + i, y0 + j);
+        }
+    }
+    for (uint j = 0u; j < 2u; j++) {
+        vec4 y = vec4(to_y(c[j * 4u]), to_y(c[j * 4u + 1u]), to_y(c[j * 4u + 2u]), to_y(c[j * 4u + 3u]));
+        luma[(p.luma_offset + (y0 + j) * p.luma_stride + x0) / 4u] = pack4(y);
+    }
+    // 4x2 pixels share two chroma samples: average each 2x2.
+    vec3 left = (c[0] + c[1] + c[4] + c[5]) * 0.25;
+    vec3 right = (c[2] + c[3] + c[6] + c[7]) * 0.25;
+    chroma[(p.chroma_offset + (y0 / 2u) * p.chroma_stride + x0) / 4u] = pack4(vec4(to_u(left), to_v(left), to_u(right), to_v(right)));
+}

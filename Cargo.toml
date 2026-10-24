@@ -1,0 +1,31 @@
+[package]
+name = "sfrecorder"
+version = "0.1.0"
+edition = "2021"
+description = "Lean recorder for the Steam Frame: records what the panels show, Steam overlays and all"
+license = "GPL-3.0-only"
+
+[[bin]]
+name = "sfrecorder"
+path = "src/main.rs"
+
+[[bin]]
+name = "sfrecorder-grab"
+path = "src/bin/sfrecorder-grab.rs"
+
+[dependencies]
+anyhow = "1"
+ash = { version = "0.38", default-features = false, features = ["loaded", "debug"] }
+drm = "0.14"
+ffmpeg-sys-next = { version = "7.1", default-features = false, features = ["avcodec", "avformat"] }
+libc = "0.2"
+
+[build-dependencies]
+bindgen = "0.70"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true
+panic = "abort"
