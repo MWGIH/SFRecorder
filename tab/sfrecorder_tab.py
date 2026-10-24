@@ -463,7 +463,10 @@ def run():
                 action = menu.hit(x, y)
                 if action:
                     act(action)
-            elif event.eventType == openvr.VREvent_MouseMove and not eye_popup_pinned and popup != "raw":
+            # Hovering only opens and closes the eye help. It must not touch the
+            # Raw warning or the Uninstall confirmation: moving the pointer
+            # between the two Uninstall presses used to cancel it.
+            elif event.eventType == openvr.VREvent_MouseMove and not eye_popup_pinned and popup in (None, "eye"):
                 hover = "eye" if menu.over_info(x, y) else None
                 if hover != popup:
                     popup = hover

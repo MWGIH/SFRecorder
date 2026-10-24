@@ -77,6 +77,20 @@ fn parse_args() -> Result<Args> {
                 }
                 std::process::exit(0);
             }
+            // Internal: see openvr::eye_rotation_isolated.
+            "--eye-rotation" => {
+                let eye: usize = value()?.parse().context("eye must be 0 or 1")?;
+                let cpp = value()? == "cpp";
+                let result = OpenVr::connect().and_then(|vr| vr.eye_rotation(eye.min(1), cpp));
+                match result {
+                    Ok(r) => println!("{}", sfrecorder::openvr::format_rotation(&r)),
+                    Err(e) => {
+                        println!("{e:#}");
+                        std::process::exit(1);
+                    }
+                }
+                std::process::exit(0);
+            }
             "--probe-mirror" => {
                 let dir = default_output()?.parent().unwrap().to_path_buf();
                 if let Err(e) = sfrecorder::mirror::probe(&dir) {

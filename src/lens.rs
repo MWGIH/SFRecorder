@@ -203,8 +203,17 @@ pub fn plain(out_w: u32, out_h: u32, eye: usize, panel: (u32, u32), f: Frustum) 
 
 /// The eye's turn against the head, plus SFRECORDER_ROLL (degrees) if set,
 /// for checking the levelling by hand.
-pub fn head_rotation(vr: &OpenVr, eye: usize) -> [[f64; 3]; 3] {
-    let r = vr.eye_rotation(eye);
+pub fn head_rotation(_vr: &OpenVr, eye: usize) -> [[f64; 3]; 3] {
+    static CACHE: std::sync::Mutex<[Option<[[f64; 3]; 3]>; 2]> = std::sync::Mutex::new([None; 2]);
+    let cached = CACHE.lock().unwrap()[eye.min(1)];
+    let r = cached.unwrap_or_else(|| {
+        let r = crate::openvr::eye_rotation_isolated(eye).unwrap_or_else(|e| {
+            eprintln!("   can't ask SteamVR how the eye is turned ({e:#}); the picture is not levelled");
+            crate::openvr::IDENTITY
+        });
+        CACHE.lock().unwrap()[eye.min(1)] = Some(r);
+        r
+    });
     match std::env::var("SFRECORDER_ROLL").ok().and_then(|v| v.parse::<f64>().ok()) {
         Some(deg) => {
             let (s, c) = deg.to_radians().sin_cos();
