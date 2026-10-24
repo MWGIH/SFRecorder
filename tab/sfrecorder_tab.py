@@ -325,7 +325,7 @@ class Menu:
         Drawn 4x larger and scaled down for smooth edges."""
         size, scale = 256, 4
         big = Image.new("RGBA", (size * scale, size * scale), (0, 0, 0, 0))
-        margin = 10 * scale
+        margin = 28 * scale
         ImageDraw.Draw(big).ellipse((margin, margin, size * scale - margin, size * scale - margin), fill=Menu.REC)
         return big.resize((size, size), Image.LANCZOS)
 
