@@ -56,8 +56,7 @@ pub fn run(card: &Path, out_dir: &Path) -> Result<()> {
             let eye = vr.view_eye().unwrap_or(0);
             let f = vr.frustum(eye);
             say!("   eye {eye}, frustum l {:.3} r {:.3} t {:.3} b {:.3}", f.left, f.right, f.top, f.bottom);
-            let r = lens::head_rotation(&vr, eye);
-            say!("   eye turned {:.2}° against the head (levelled in 16:9); rotation {:.3?}", lens::roll_degrees(&r), r);
+            say!("   eye turned {:.1}° against the head (built in, levelled in 16:9)", lens::roll_degrees(&lens::head_rotation(eye)));
             for (u, v) in [(0.5, 0.5), (0.25, 0.5), (0.5, 0.25)] {
                 match vr.distortion(eye, u, v) {
                     Some([r, g, b]) => say!(

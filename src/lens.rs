@@ -170,7 +170,7 @@ pub fn framed(vr: &OpenVr, eye: usize, out_w: u32, out_h: u32, zoom: f64) -> Res
         bail!("SteamVR's view for this eye makes no sense ({f:?})");
     }
     let forward = Forward::sample(vr, eye)?;
-    let rot = head_rotation(vr, eye);
+    let rot = head_rotation(eye);
     let g = fit(&forward, f, rot, eye, out_w, out_h, zoom);
     // Lens data the maths can't invert sends every pixel to the panel's
     // black edge; a recording of nothing is worse than an un-warped crop.
@@ -226,33 +226,18 @@ pub fn plain(out_w: u32, out_h: u32, eye: usize, panel: (u32, u32), f: Frustum) 
     g
 }
 
-/// The eye's turn against the head, plus SFRECORDER_ROLL (degrees) if set,
-/// for checking the levelling by hand.
-pub fn head_rotation(_vr: &OpenVr, eye: usize) -> [[f64; 3]; 3] {
-    static CACHE: std::sync::Mutex<[Option<[[f64; 3]; 3]>; 2]> = std::sync::Mutex::new([None; 2]);
-    let cached = CACHE.lock().unwrap()[eye.min(1)];
-    let r = cached.unwrap_or_else(|| {
-        let r = crate::openvr::eye_rotation_isolated(eye).unwrap_or_else(|e| {
-            eprintln!("   can't ask SteamVR how the eye is turned ({e:#}); the picture is not levelled");
-            crate::openvr::IDENTITY
-        });
-        CACHE.lock().unwrap()[eye.min(1)] = Some(r);
-        r
-    });
-    match std::env::var("SFRECORDER_ROLL").ok().and_then(|v| v.parse::<f64>().ok()) {
-        Some(deg) => {
-            let (s, c) = deg.to_radians().sin_cos();
-            let z = [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]];
-            let mut out = [[0.0; 3]; 3];
-            for (i, row) in out.iter_mut().enumerate() {
-                for (j, v) in row.iter_mut().enumerate() {
-                    *v = (0..3).map(|k| z[i][k] * r[k][j]).sum();
-                }
-            }
-            out
-        }
-        None => r,
-    }
+/// How each eye's picture is turned against the head on the Frame, in
+/// degrees (left, right). Its panels are canted; uncorrected, the left eye's
+/// recording leaned about 10° (measured from upright edges in a recording).
+/// SteamVR's own answer (GetEyeToHeadTransform) crashes on the Frame, so the
+/// value is built in. The eyes are mirror images, so the right eye turns the
+/// other way.
+pub const EYE_ROLL_DEGREES: [f64; 2] = [-10.0, 10.0];
+
+/// The eye's turn against the head, as a rotation (head = R * eye).
+pub fn head_rotation(eye: usize) -> [[f64; 3]; 3] {
+    let (s, c) = EYE_ROLL_DEGREES[eye.min(1)].to_radians().sin_cos();
+    [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]
 }
 
 /// The eye's roll against the head in degrees, for the log.
@@ -410,6 +395,18 @@ mod tests {
         };
         let z = fit(&narrow, f, crate::openvr::IDENTITY, 0, 1920, 1080, 1.0);
         assert!(z.clean && z.view[1] < r, "{:?}", z.view);
+    }
+
+    #[test]
+    fn built_in_roll_matches_the_frame() {
+        // Uncorrected, upright edges in a left-eye recording leaned with
+        // their tops to the left (about 10°). Levelling must undo exactly
+        // that: an upright line in head space reads such a line in the eye.
+        let r = head_rotation(0);
+        let (top, bottom) = (to_eye(&r, [0.0, -0.5]), to_eye(&r, [0.0, 0.5]));
+        let lean = (bottom[0] - top[0]).atan2(bottom[1] - top[1]).to_degrees();
+        assert!((lean - 10.0).abs() < 0.01, "{lean}");
+        assert!((roll_degrees(&head_rotation(1)) + roll_degrees(&r)).abs() < 1e-9);
     }
 
     #[test]
