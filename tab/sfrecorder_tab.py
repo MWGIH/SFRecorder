@@ -289,7 +289,7 @@ class Menu:
         else:
             draw.text((self.WIDTH // 2, 640), status, font=self.font, fill=WHITE, anchor="mm")
         draw.text((self.WIDTH // 2, 730), "Saved to Videos/SFRecorder", font=self.small_font, fill=GREY, anchor="mm")
-        draw.text((self.WIDTH // 2, 770), "Share them from the FrameCopy tab", font=self.small_font, fill=GREY,
+        draw.text((self.WIDTH // 2, 770), "Share them from the SCopy tab", font=self.small_font, fill=GREY,
                   anchor="mm")
         if recording:
             draw.text((self.WIDTH // 2, 840), "Paused while this menu is open", font=self.small_font, fill=YELLOW,
