@@ -21,7 +21,19 @@ cd ~ && (git clone https://github.com/MWGIH/SFrameOverlay.git || git -C SFrameOv
 ```
 
 The installer asks for your password once, to let the recorder read the panels.
-To remove it: `~/.local/share/sfrecorder/uninstall.sh` (recordings are kept).
+
+## Uninstall
+
+Press **Uninstall** in the SFRecorder tab (twice, to confirm), or run:
+
+```sh
+~/.local/share/sfrecorder/uninstall.sh
+```
+
+If that file is already gone (a broken install), run `~/SFRecorder/uninstall.sh`
+instead. It removes the tab and its service, the recorder, its settings and logs,
+and the `~/SFRecorder` folder the install line downloaded (unless you changed
+files in it). Your recordings in `~/Videos/SFRecorder` are kept.
 
 ## Test builds
 

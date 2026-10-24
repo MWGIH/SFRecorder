@@ -34,6 +34,8 @@ OUTPUT_DIR = os.path.join(HOME, "Videos", "SFRecorder")
 SOURCE_DIR_FILE = os.path.join(CONFIG_DIR, "source_dir")
 RELEASE_TAG_FILE = os.path.join(CONFIG_DIR, "release_tag")
 NEEDS_UNLOCK_FILE = os.path.join(CONFIG_DIR, "needs_unlock")
+UNINSTALL_SCRIPT = os.path.join(os.environ.get("XDG_DATA_HOME", os.path.join(HOME, ".local", "share")),
+                                "sfrecorder", "uninstall.sh")
 UPDATE_LOG = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache")), "sfrecorder", "update.log")
 LOG_FILE = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache")), "sfrecorder", "last-recording.log")
 
@@ -229,7 +231,8 @@ class Menu:
             y += 34
 
     def render(self, s, recording, status, overlay, view_eye, popup):
-        """`popup` is "raw" (the Raw warning to confirm), "eye" (where to change the eye) or None."""
+        """`popup` is "raw" (the Raw warning to confirm), "eye" (where to change the eye),
+        "uninstall" (Uninstall pressed once, waiting for the second press) or None."""
         self.buttons = []
         img = Image.new("RGBA", (self.WIDTH, self.HEIGHT), self.BG)
         draw = ImageDraw.Draw(img)
@@ -292,7 +295,12 @@ class Menu:
             draw.text((self.WIDTH // 2, 840), "Paused while this menu is open", font=self.small_font, fill=YELLOW,
                       anchor="mm")
         else:
-            self._button(draw, (250, 805, 550, 870), "Update", "update")
+            self._button(draw, (110, 805, 390, 870), "Update", "update")
+            if popup == "uninstall":
+                self._button(draw, (410, 805, 730, 870), "Tap to confirm", "uninstall", fill=self.REC,
+                             font=self.small_font)
+            else:
+                self._button(draw, (410, 805, 730, 870), "Uninstall", "uninstall")
 
         if popup == "eye":
             lines = wrap(draw, EYE_HELP, self.small_font, 600)
@@ -412,12 +420,27 @@ def run():
                 status = "Updating... this tab will restart"
                 run_detached(f"cd {shlex.quote(source)} && git pull --ff-only && "
                              f"SFRECORDER_TAG={shlex.quote(tag)} ./install.sh </dev/null >{shlex.quote(UPDATE_LOG)} 2>&1")
+        elif action == "uninstall":
+            if engine:
+                status = "! Stop recording first to uninstall"
+            elif popup != "uninstall":
+                popup = "uninstall"
+                status = "Uninstall keeps your recordings"
+            elif not os.path.exists(UNINSTALL_SCRIPT):
+                popup, status = None, "! Uninstall script missing: run SFRecorder/uninstall.sh in a terminal"
+            else:
+                popup, status = None, "Uninstalling... this tab will close"
+                # Run from a copy, as the script deletes the folder it lives in.
+                run_detached(f"cp {shlex.quote(UNINSTALL_SCRIPT)} /tmp/sfrecorder-uninstall.sh && "
+                             f"bash /tmp/sfrecorder-uninstall.sh; rm -f /tmp/sfrecorder-uninstall.sh")
         elif action == "hud":
             settings.hud = not settings.hud
             if engine:
                 engine.send("hud show" if settings.hud else "hud hide")
         if action != "eye-info" and popup == "eye":
             popup, eye_popup_pinned = None, False
+        if action != "uninstall" and popup == "uninstall":
+            popup = None
         settings.save()
         redraw()
 
