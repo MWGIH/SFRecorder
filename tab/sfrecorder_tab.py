@@ -29,6 +29,8 @@ CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, "
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.ini")
 ENGINE = os.path.join(HOME, ".local", "bin", "sfrecorder")
 OUTPUT_DIR = os.path.join(HOME, "Videos", "SFRecorder")
+# The recorder's own log of the last recording, for when something goes wrong.
+LOG_FILE = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache")), "sfrecorder", "last-recording.log")
 
 # SFrameOverlay, if it's installed: its install folder and its on/off file.
 OVERLAY_SCRIPT = os.path.join(os.environ.get("XDG_DATA_HOME", os.path.join(HOME, ".local", "share")),
@@ -144,7 +146,10 @@ class Engine:
                 "--hud", "show" if settings.hud else "hide"]
         if settings.mic:
             args.append("--mic")
-        self.proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+        os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+        with open(LOG_FILE, "w") as log:
+            self.proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
+                                         text=True, bufsize=1)
         self.updates = queue.Queue()
         self.status = {"state": "starting", "seconds": 0.0, "file": "", "message": ""}
         threading.Thread(target=self._read, daemon=True).start()
@@ -261,8 +266,14 @@ class Menu:
                 draw.text((760, 580), "Get it: " + OVERLAY_REPO, font=self.small_font,
                           fill=GREY, anchor="rm")
 
-        draw.text((self.WIDTH // 2, 640), status, font=self.font, fill=RED if status.startswith("!") else WHITE,
-                  anchor="mm")
+        if status.startswith("!"):
+            # Errors can be long: wrap them, and point to the full log.
+            lines = wrap(draw, status[2:], self.small_font, 680)[:3]
+            lines.append("Details: ~/.cache/sfrecorder/last-recording.log")
+            for i, line in enumerate(lines):
+                draw.text((self.WIDTH // 2, 615 + 32 * i), line, font=self.small_font, fill=RED, anchor="mm")
+        else:
+            draw.text((self.WIDTH // 2, 640), status, font=self.font, fill=WHITE, anchor="mm")
         draw.text((self.WIDTH // 2, 730), "Saved to Videos/SFRecorder", font=self.small_font, fill=GREY, anchor="mm")
         draw.text((self.WIDTH // 2, 770), "Share them from the FrameCopy tab", font=self.small_font, fill=GREY,
                   anchor="mm")
@@ -430,7 +441,7 @@ def run():
                 elif st.get("state") == "finished":
                     status = "Nothing was recorded"
                 else:
-                    status = "! " + (st.get("message") or "Recording failed")[:60]
+                    status = "! " + (st.get("message") or "Recording failed")
                 engine = None
                 redraw()
             elif st.get("state") in ("recording", "paused") and int(st.get("seconds", 0)) != shown_seconds:

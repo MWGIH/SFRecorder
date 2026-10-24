@@ -166,6 +166,10 @@ fn run() -> Result<()> {
     let mut packets: Vec<Packet> = Vec::new();
     let mut frame = 0u64;
     let mut last_status = 0u64;
+    let mut last_log = start;
+    let mut pending_pts = 0i64;
+    let mut stats = Stats::default();
+    eprintln!("recording {out_w}x{out_h} at {fps:.2} fps, GPU queue {}", if gpu.low_priority { "low priority" } else { "normal priority" });
     control::status("recording", 0.0, &file, "");
 
     while !STOP.load(Ordering::Relaxed) {
@@ -200,11 +204,29 @@ fn run() -> Result<()> {
             continue;
         }
 
-        if let Err(e) = capture(&mut kms, &mut gpu, &mut encoder, rel(vblank)) {
-            // A missed frame isn't worth stopping for; a stuck GPU is.
-            if format!("{e:#}").contains("too long") {
-                return Err(e);
+        // Hand a finished conversion to the encoder, then start the next one
+        // unless the GPU is still busy (then this frame is skipped).
+        if let Some(target) = gpu.finished()? {
+            encoder.encode(target, pending_pts.max(0) as u64)?;
+            stats.encoded += 1;
+        }
+        if gpu.busy() {
+            stats.skipped_gpu += 1;
+        } else {
+            match capture(&mut kms, &mut gpu, &mut encoder) {
+                Ok(true) => pending_pts = rel(vblank),
+                Ok(false) => stats.skipped_encoder += 1,
+                Err(e) => {
+                    stats.failed += 1;
+                    if stats.failed <= 3 {
+                        eprintln!("frame skipped: {e:#}");
+                    }
+                }
             }
+        }
+        if vblank >= last_log + 10_000_000 {
+            last_log = vblank;
+            stats.log(&mut gpu);
         }
         encoder.packets(&mut packets)?;
         for p in packets.drain(..) {
@@ -214,6 +236,17 @@ fn run() -> Result<()> {
     }
 
     control::status("finishing", 0.0, &file, "");
+    stats.log(&mut gpu);
+    // Let a conversion still in flight land in the recording.
+    for _ in 0..100 {
+        if let Some(target) = gpu.finished()? {
+            encoder.encode(target, pending_pts.max(0) as u64)?;
+        }
+        if !gpu.busy() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
     encoder.finish(&mut packets)?;
     for p in packets.drain(..) {
         let pts = p.pts_us as i64;
@@ -227,11 +260,32 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-/// One frame: borrow whatever is on screen, convert it into a free encoder
-/// buffer, and queue it.
-fn capture(kms: &mut Kms, gpu: &mut Gpu, encoder: &mut Encoder, pts: i64) -> Result<()> {
-    // Encoder still busy with earlier frames: skip this one.
-    let Some(target) = encoder.free_input() else { return Ok(()) };
+#[derive(Default)]
+struct Stats {
+    encoded: u64,
+    skipped_gpu: u64,
+    skipped_encoder: u64,
+    failed: u64,
+}
+
+impl Stats {
+    /// One line to stderr (the service log) every few seconds.
+    fn log(&mut self, gpu: &mut Gpu) {
+        let mut t = gpu.take_timings();
+        t.sort_unstable();
+        let pct = |p: usize| t.get(t.len().saturating_sub(1) * p / 100).map_or(0.0, |&v| v as f64 / 1000.0);
+        eprintln!(
+            "frames: {} encoded, {} skipped (GPU busy), {} skipped (encoder busy), {} failed; GPU time median {:.2} ms, worst {:.2} ms",
+            self.encoded, self.skipped_gpu, self.skipped_encoder, self.failed, pct(50), pct(100)
+        );
+        *self = Self::default();
+    }
+}
+
+/// One frame: borrow whatever is on screen and start converting it into a
+/// free encoder buffer. False if the encoder had no buffer free.
+fn capture(kms: &mut Kms, gpu: &mut Gpu, encoder: &mut Encoder) -> Result<bool> {
+    let Some(target) = encoder.free_input() else { return Ok(false) };
     let converted = (|| {
         let fb = kms.current_fb()?.context("nothing on screen")?;
         let buf = kms.export(fb)?;
@@ -246,5 +300,5 @@ fn capture(kms: &mut Kms, gpu: &mut Gpu, encoder: &mut Encoder, pts: i64) -> Res
         encoder.release(target);
         return Err(e);
     }
-    encoder.encode(target, pts.max(0) as u64)
+    Ok(true)
 }

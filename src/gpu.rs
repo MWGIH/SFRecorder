@@ -88,6 +88,11 @@ pub struct Gpu {
     out: (u32, u32),
     scanouts: Vec<Scanout>,
     targets: Vec<Target>,
+    /// The conversion in flight: its encoder buffer and when it was submitted.
+    pending: Option<(usize, std::time::Instant)>,
+    gpu_us: Vec<u64>,
+    /// Whether the queue got the low priority it asked for.
+    pub low_priority: bool,
 }
 
 impl Gpu {
@@ -133,7 +138,10 @@ impl Gpu {
             vk::QUEUE_FAMILY_EXTERNAL
         };
         let mut priority = vk::DeviceQueueGlobalPriorityCreateInfoKHR::default().global_priority(vk::QueueGlobalPriorityKHR::LOW);
-        let low_priority = if has(ash::khr::global_priority::NAME) {
+        let wants_low = std::env::var_os("SFRECORDER_NORMAL_PRIORITY").is_none();
+        let low_priority = if !wants_low {
+            false
+        } else if has(ash::khr::global_priority::NAME) {
             extensions.push(ash::khr::global_priority::NAME.as_ptr());
             true
         } else if has(ash::ext::global_priority::NAME) {
@@ -215,6 +223,9 @@ impl Gpu {
                 out: (out_w, out_h),
                 scanouts: Vec::new(),
                 targets: Vec::new(),
+                pending: None,
+                gpu_us: Vec::new(),
+                low_priority,
             };
             gpu.grid = gpu.upload(bytes_of(&grid.points))?;
             Ok(gpu)
@@ -256,8 +267,38 @@ impl Gpu {
         Ok(())
     }
 
-    /// Converts scanout `id` into encoder buffer `target`, and waits until done.
+    /// True while a conversion is still running on the GPU.
+    pub fn busy(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// The encoder buffer of a finished conversion, if one just finished.
+    /// The recorder never waits on the GPU: a conversion that isn't done yet
+    /// is checked again at the next vblank, and frames are skipped meanwhile.
+    pub fn finished(&mut self) -> Result<Option<usize>> {
+        let Some((target, since)) = self.pending else { return Ok(None) };
+        if unsafe { self.device.get_fence_status(self.fence) }? {
+            unsafe { self.device.reset_fences(&[self.fence]) }?;
+            self.pending = None;
+            self.gpu_us.push(since.elapsed().as_micros() as u64);
+            return Ok(Some(target));
+        }
+        if since.elapsed() > std::time::Duration::from_secs(2) {
+            bail!("the GPU hasn't finished a frame in 2 s (it may have hit an error; see `sudo dmesg`)");
+        }
+        Ok(None)
+    }
+
+    /// Times from submit to done (µs) since the last call, for the log.
+    pub fn take_timings(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.gpu_us)
+    }
+
+    /// Starts converting scanout `id` into encoder buffer `target`.
     pub fn convert(&mut self, id: u64, target: usize) -> Result<()> {
+        if self.pending.is_some() {
+            bail!("a conversion is already running");
+        }
         let scanout = self.scanouts.iter().find(|s| s.id == id).context("unknown scanout buffer")?;
         let t = &self.targets[target];
         let d = &self.device;
@@ -334,10 +375,8 @@ impl Gpu {
 
             let cmds = [self.cmd];
             d.queue_submit(self.queue, &[vk::SubmitInfo::default().command_buffers(&cmds)], self.fence)?;
-            let waited = d.wait_for_fences(&[self.fence], true, 200_000_000);
-            d.reset_fences(&[self.fence])?;
-            waited.context("the GPU took too long converting a frame")?;
         }
+        self.pending = Some((target, std::time::Instant::now()));
         Ok(())
     }
 
