@@ -33,7 +33,7 @@ OUTPUT_DIR = os.path.join(HOME, "Videos", "SFRecorder")
 # The recorder's own log of the last recording, for when something goes wrong.
 SOURCE_DIR_FILE = os.path.join(CONFIG_DIR, "source_dir")
 RELEASE_TAG_FILE = os.path.join(CONFIG_DIR, "release_tag")
-NEEDS_UNLOCK_FILE = os.path.join(CONFIG_DIR, "needs_unlock")
+HELPER = os.path.join(HOME, ".local", "lib", "sfrecorder", "sfrecorder-grab")
 UNINSTALL_SCRIPT = os.path.join(os.environ.get("XDG_DATA_HOME", os.path.join(HOME, ".local", "share")),
                                 "sfrecorder", "uninstall.sh")
 UPDATE_LOG = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache")), "sfrecorder", "update.log")
@@ -81,6 +81,16 @@ def read_text(path):
             return f.read().strip()
     except OSError:
         return None
+
+
+def helper_unlocked():
+    """True if the panel helper still has the capability the install line gives it.
+    Checks the helper itself, not the note install.sh leaves, so the warning
+    shows exactly when recording would fail."""
+    try:
+        return bool(os.getxattr(HELPER, "security.capability"))
+    except OSError:
+        return False
 
 
 def run_detached(command):
@@ -449,8 +459,8 @@ def run():
         settings.save()
         redraw()
 
-    if os.path.exists(NEEDS_UNLOCK_FILE):
-        status = "! Updated: run the install line in a terminal once to unlock the panels"
+    if not helper_unlocked():
+        status = "! The panels are locked: run the install line in a terminal once to unlock them"
     redraw()
     while True:
         now = time.monotonic()
