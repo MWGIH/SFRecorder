@@ -8,6 +8,26 @@ SteamVR dashboard.
 > and the MP4 writer is tested, but the capture, framing and encoder still need
 > checking on the headset (see [To check on the headset](#to-check-on-the-headset)).
 
+## Test build (headset)
+
+Run these in a terminal on the Frame. They use the `claude/project-thread-vjosj1`
+branch and the `test` pre-release.
+
+**1. Mirror test** (no password, installs nothing). Start a game, turn the FPS
+overlay on and open a Steam overlay, then run:
+
+```sh
+cd ~ && (git clone -b claude/project-thread-vjosj1 https://github.com/MWGIH/SFRecorder.git || git -C SFRecorder pull) && SFRecorder/scripts/probe-mirror.sh
+```
+
+It saves `mirror-test-left.bmp` and `mirror-test-right.bmp` in `~/Videos/SFRecorder`.
+
+**2. Install the test version:**
+
+```sh
+cd ~ && (git clone -b claude/project-thread-vjosj1 https://github.com/MWGIH/SFRecorder.git || git -C SFRecorder pull) && SFRECORDER_TAG=test SFRecorder/install.sh
+```
+
 ## Install
 
 ```sh
