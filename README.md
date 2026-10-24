@@ -83,7 +83,7 @@ cd ~ && (git clone -b claude/project-thread-vjosj1 https://github.com/MWGIH/SFRe
 Game audio is always recorded. Recordings go to `~/Videos/SFRecorder` as
 `SFRecorder_<date>_<time>.mp4` (HEVC + AAC). A file is only given its `.mp4`
 name once it's finished; until then it's `.mp4.part`. Use
-[FrameCopy](https://github.com/MWGIH/FrameCopy) to copy them to another device.
+[SCopy](https://github.com/MWGIH/SCopy) to copy them to another device.
 
 ## How it works
 

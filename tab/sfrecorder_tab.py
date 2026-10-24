@@ -63,7 +63,7 @@ FONT_CANDIDATES = [
 ]
 
 WHITE = (255, 255, 255, 255)
-GREY = (170, 170, 170, 255)
+GREY = (147, 154, 166, 255)
 YELLOW = (255, 210, 60, 255)
 RED = (255, 80, 80, 255)
 
@@ -199,11 +199,12 @@ class Engine:
 
 class Menu:
     WIDTH, HEIGHT = 800, 900
-    BG = (24, 26, 32, 255)
-    BUTTON = (58, 62, 74, 255)
-    ON = (40, 170, 80, 255)
+    # Gaming on Steam site colours, matching the FPS overlay's tab.
+    BG = (0, 0, 0, 255)
+    BUTTON = (24, 47, 103, 255)
+    ON = (24, 157, 255, 255)
     REC = (190, 40, 40, 255)
-    POPUP = (44, 48, 60, 255)
+    POPUP = (16, 32, 58, 255)
 
     def __init__(self):
         self.title_font = load_font(52)
@@ -289,7 +290,7 @@ class Menu:
         else:
             draw.text((self.WIDTH // 2, 640), status, font=self.font, fill=WHITE, anchor="mm")
         draw.text((self.WIDTH // 2, 730), "Saved to Videos/SFRecorder", font=self.small_font, fill=GREY, anchor="mm")
-        draw.text((self.WIDTH // 2, 770), "Share them from the FrameCopy tab", font=self.small_font, fill=GREY,
+        draw.text((self.WIDTH // 2, 770), "Share them from the SCopy tab", font=self.small_font, fill=GREY,
                   anchor="mm")
         if recording:
             draw.text((self.WIDTH // 2, 840), "Paused while this menu is open", font=self.small_font, fill=YELLOW,
@@ -319,7 +320,7 @@ class Menu:
 
     @staticmethod
     def thumbnail():
-        img = Image.new("RGBA", (256, 256), Menu.BG)
+        img = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
         draw.ellipse((68, 68, 188, 188), fill=Menu.REC)
         return img
