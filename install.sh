@@ -41,9 +41,12 @@ else
     curl -fsSL "$RELEASES/sfrecorder-$(uname -m).tar.gz" | tar -xz -C "$BUILD"
 fi
 install -m 755 "$BUILD/sfrecorder" "$BIN_DIR/sfrecorder"
-# Rewriting the helper would drop its unlock, so it's only replaced when it
-# actually changed; most updates then need no password.
-if [ -f "$HELPER" ] && cmp -s "$BUILD/sfrecorder-grab" "$HELPER"; then
+# Rewriting the helper would drop its unlock, so it's only replaced when its
+# version changed (every release rebuilds it, so its bytes always differ);
+# most updates then need no password.
+helper_version() { "$1" --version 2>/dev/null || true; }
+NEW_HELPER_VERSION="$(helper_version "$BUILD/sfrecorder-grab")"
+if [ -f "$HELPER" ] && [ -n "$NEW_HELPER_VERSION" ] && [ "$(helper_version "$HELPER")" = "$NEW_HELPER_VERSION" ]; then
     HELPER_CHANGED=0
 else
     install -m 755 "$BUILD/sfrecorder-grab" "$HELPER"
@@ -87,6 +90,11 @@ cp "$LIB_DIR/libopenvr_api.so" "$PKG_DIR/libopenvr_api_64.so"
 # helper that hands the recorder the on-screen buffer.
 if [ "$HELPER_CHANGED" = 0 ] && getcap "$HELPER" 2>/dev/null | grep -q cap_sys_admin; then
     echo "==> Panels already unlocked"
+    rm -f "$CONFIG_DIR/needs_unlock"
+elif sudo -n setcap cap_sys_admin+ep "$HELPER" 2>/dev/null; then
+    # sudo needs no password here (as on the Frame), so this also works when
+    # updating from the tab, with no terminal.
+    echo "==> Panels unlocked"
     rm -f "$CONFIG_DIR/needs_unlock"
 elif [ -t 0 ]; then
     echo "==> Unlocking the panels (asks for your password)"
