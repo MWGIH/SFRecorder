@@ -19,7 +19,7 @@ const RESYNC_SAMPLES: i64 = audio::RATE as i64 / 20;
 
 fn check(ret: i32, what: &str) -> Result<i32> {
     if ret < 0 {
-        let mut buf = [0i8; 128];
+        let mut buf = [0 as std::ffi::c_char; 128];
         unsafe { ff::av_strerror(ret, buf.as_mut_ptr(), buf.len()) };
         let msg = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }.to_string_lossy();
         bail!("{what}: {msg}");

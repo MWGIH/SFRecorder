@@ -119,7 +119,7 @@ impl Gpu {
             .position(|q| q.queue_flags.contains(vk::QueueFlags::COMPUTE))
             .context("no compute queue")? as u32;
 
-        let mut extensions: Vec<*const i8> = required.iter().map(|n| n.as_ptr()).collect();
+        let mut extensions: Vec<*const std::ffi::c_char> = required.iter().map(|n| n.as_ptr()).collect();
         // The modifier extension depends on these on 1.1 drivers.
         for dep in [ash::khr::image_format_list::NAME, ash::khr::bind_memory2::NAME, ash::khr::sampler_ycbcr_conversion::NAME] {
             if has(dep) {
