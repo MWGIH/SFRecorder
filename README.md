@@ -91,11 +91,11 @@ PKG_CONFIG_PATH=build/ffmpeg/lib/pkgconfig cargo build --release
 
 `.github/workflows/release.yml` builds the engine and the private FFmpeg for
 the Frame (aarch64) on GitHub and attaches both to a release. Push a `v*` tag
-for a release, or a tag like `v0.1.0-test1` for a test pre-release. To install
-a test build:
+for a release. Pushes to the test branch update the `test` pre-release. To
+install a test build:
 
 ```sh
-SFRECORDER_TAG=v0.1.0-test1 SFRecorder/install.sh
+SFRECORDER_TAG=test SFRecorder/install.sh
 ```
 
 ## To check on the headset
