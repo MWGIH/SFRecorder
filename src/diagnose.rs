@@ -34,6 +34,9 @@ pub fn run(card: &Path, out_dir: &Path) -> Result<()> {
     let mut kms = Kms::open(card)?;
     say!("   panels {}x{} at {:.2} Hz", kms.size.0, kms.size.1, kms.refresh_hz);
     say!("   panel helper unlocked: {}", crate::grab::helper_unlocked());
+    for line in kms.describe_planes() {
+        say!("   {line}");
+    }
     let buf = kms.export_current()?;
     say!(
         "   on screen: {}x{} {} modifier {:#x}, pitch {}, offset {}",
@@ -53,14 +56,26 @@ pub fn run(card: &Path, out_dir: &Path) -> Result<()> {
             let eye = vr.view_eye().unwrap_or(0);
             let f = vr.frustum(eye);
             say!("   eye {eye}, frustum l {:.3} r {:.3} t {:.3} b {:.3}", f.left, f.right, f.top, f.bottom);
+            for (u, v) in [(0.5, 0.5), (0.25, 0.5), (0.5, 0.25)] {
+                match vr.distortion(eye, u, v) {
+                    Some([r, g, b]) => say!(
+                        "   panel {u:.2},{v:.2} shows image r {:.3},{:.3} g {:.3},{:.3} b {:.3},{:.3}",
+                        r[0], r[1], g[0], g[1], b[0], b[1]
+                    ),
+                    None => say!("   panel {u:.2},{v:.2}: SteamVR gives no lens data"),
+                }
+            }
             match lens::framed(&vr, eye, W, H, 1.0) {
                 Ok(g) => {
-                    say!("   16:9 framing ok, per-channel colour {}", g.per_channel);
+                    say!("   16:9 framing ok, {:.0}% of points inverted, per-channel colour {}", g.converged * 100.0, g.per_channel);
+                    describe_grid(&g);
                     g
                 }
                 Err(e) => {
-                    say!("   16:9 framing failed ({e:#}), using Raw");
-                    raw()
+                    say!("   16:9 framing failed ({e:#}), using the middle of the eye without un-warping");
+                    let g = lens::plain(W, H, eye, kms.size, f);
+                    describe_grid(&g);
+                    g
                 }
             }
         }
@@ -82,33 +97,9 @@ pub fn run(card: &Path, out_dir: &Path) -> Result<()> {
         };
         let prio = if gpu.low_priority { "low" } else { "normal" };
         say!("   [{prio} priority] {} on {}", gpu.describe_scanout(fourcc, modifier), gpu.device_name);
-        let result = (|| -> Result<Option<Duration>> {
-            let buf = kms.export_current()?;
-            let id = kms::buffer_id(&buf.fd);
-            kms::wait_rendered(&buf.fd, Duration::from_millis(50));
-            gpu.add_scanout(id, buf)?;
-            let t = gpu.add_host_target(W, H)?;
-            gpu.convert(id, t)?;
-            let done = gpu.wait(LIMIT)?;
-            if done.is_some() {
-                let luma = gpu.read_luma(t, (W * H) as usize)?;
-                let mean = luma.iter().map(|&v| v as u64).sum::<u64>() as f64 / luma.len() as f64;
-                let (lo, hi) = (luma.iter().min().copied().unwrap_or(0), luma.iter().max().copied().unwrap_or(0));
-                say!("   [{prio} priority] brightness: average {mean:.1}, range {lo}..{hi} (16 = black, 235 = white)");
-                let path = out_dir.join("diagnose-frame.bmp");
-                let mut rgba = Vec::with_capacity(luma.len() * 4);
-                for row in luma.chunks_exact(W as usize).rev() {
-                    for &v in row {
-                        rgba.extend_from_slice(&[v, v, v, 255]);
-                    }
-                }
-                crate::mirror::write_bmp(&path, W, H, &rgba)?;
-                say!("   saved {}", path.display());
-            }
-            Ok(done)
-        })();
-        match result {
-            Ok(Some(t)) => {
+        match snapshot(&mut kms, &mut gpu, &out_dir.join("diagnose-frame.bmp")) {
+            Ok(Some((t, shot))) => {
+                say!("   [{prio} priority] 16:9 picture: {shot}");
                 say!("   [{prio} priority] OK in {:.2} ms", t.as_secs_f64() * 1000.0);
                 working = Some(gpu);
                 break;
@@ -121,6 +112,16 @@ pub fn run(card: &Path, out_dir: &Path) -> Result<()> {
         say!("Stopped: the GPU can't convert the panel image. Please also send `sudo dmesg | tail -40`.");
         return Ok(());
     };
+    // Both whole panels, no lens maths: tells a framing problem (this one
+    // shows the game) from a buffer the GPU reads as black (this one is
+    // black too).
+    gpu.set_grid(&raw())?;
+    match snapshot(&mut kms, &mut gpu, &out_dir.join("diagnose-raw.bmp")) {
+        Ok(Some((_, shot))) => say!("   both panels, no framing: {shot}"),
+        Ok(None) => say!("   both panels, no framing: NOT FINISHED after {} s", LIMIT.as_secs()),
+        Err(e) => say!("   both panels, no framing: failed: {e:#}"),
+    }
+    gpu.set_grid(&grid)?;
 
     say!("4. GPU conversion into the encoder's memory");
     let fps = kms.refresh_hz.min(90.0);
@@ -143,7 +144,7 @@ pub fn run(card: &Path, out_dir: &Path) -> Result<()> {
         if !gpu.knows(id) {
             gpu.add_scanout(id, buf)?;
         }
-        gpu.convert(id, target)?;
+        gpu.convert(id, target, 0)?;
         match gpu.wait(LIMIT)? {
             Some(t) => {
                 if frame == 0 {
@@ -166,6 +167,39 @@ pub fn run(card: &Path, out_dir: &Path) -> Result<()> {
     say!("5. Encoder: {converted} frames in, {} out ({keys} keyframes, {} KB)", packets.len(), bytes / 1024);
     say!("Done.");
     Ok(())
+}
+
+/// Where the grid reads from on the panel, as text.
+fn describe_grid(g: &lens::Grid) {
+    let c = g.at(W / 2, H / 2);
+    let (lo, hi) = g.bounds();
+    say!("   picture centre reads panel point {:.3},{:.3}; whole picture reads x {:.3}..{:.3}, y {:.3}..{:.3}", c[0], c[1], lo[0], hi[0], lo[1], hi[1]);
+}
+
+/// Converts what is on screen into the GPU's own memory and saves the
+/// brightness as a picture; the time taken and a summary, if it finished.
+fn snapshot(kms: &mut Kms, gpu: &mut Gpu, path: &Path) -> Result<Option<(Duration, String)>> {
+    let buf = kms.export_current()?;
+    let id = kms::buffer_id(&buf.fd);
+    kms::wait_rendered(&buf.fd, Duration::from_millis(50));
+    if !gpu.knows(id) {
+        gpu.add_scanout(id, buf)?;
+    }
+    let t = gpu.add_host_target(W, H)?;
+    gpu.convert(id, t, 0)?;
+    let Some(done) = gpu.wait(LIMIT)? else { return Ok(None) };
+    let luma = gpu.read_luma(t, (W * H) as usize)?;
+    let mean = luma.iter().map(|&v| v as u64).sum::<u64>() as f64 / luma.len() as f64;
+    let (lo, hi) = (luma.iter().min().copied().unwrap_or(0), luma.iter().max().copied().unwrap_or(0));
+    let mut rgba = Vec::with_capacity(luma.len() * 4);
+    for row in luma.chunks_exact(W as usize).rev() {
+        for &v in row {
+            rgba.extend_from_slice(&[v, v, v, 255]);
+        }
+    }
+    crate::mirror::write_bmp(&path.to_path_buf(), W, H, &rgba)?;
+    let verdict = if hi <= 17 { "ALL BLACK" } else { "has a picture" };
+    Ok(Some((done, format!("{verdict}, brightness average {mean:.1}, range {lo}..{hi} (16 = black, 235 = white), saved {}", path.display()))))
 }
 
 fn raw() -> lens::Grid {

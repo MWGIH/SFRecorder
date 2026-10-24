@@ -29,8 +29,10 @@ of recording on its own and prints what happened:
 ~/.local/bin/sfrecorder --diagnose
 ```
 
-It also saves what the GPU made of the screen as `diagnose-frame.bmp` in
-`~/Videos/SFRecorder`.
+It also saves what the GPU made of the screen as `diagnose-frame.bmp` (the
+16:9 view) and `diagnose-raw.bmp` (both panels, no framing) in
+`~/Videos/SFRecorder`. If only the 16:9 one is black, the framing is wrong; if
+both are, the GPU reads the panel's buffer as black.
 
 **2. Install the test version:**
 

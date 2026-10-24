@@ -21,8 +21,8 @@ const NV12M: u32 = fourcc(b"NM12");
 const OUTPUT: u32 = v4l2_buf_type_V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
 const CAPTURE: u32 = v4l2_buf_type_V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
 const MMAP: u32 = v4l2_memory_V4L2_MEMORY_MMAP;
-/// Raw frames in flight: one being converted, one being encoded, one spare.
-const INPUTS: u32 = 3;
+/// Raw frames in flight: up to three being converted, one being encoded, one spare.
+const INPUTS: u32 = 5;
 const OUTPUTS: u32 = 4;
 /// Room for one encoded frame.
 const CODED_SIZE: u32 = 4 << 20;

@@ -18,6 +18,10 @@ const SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/convert.spv"));
 const DMA_BUF: vk::ExternalMemoryHandleTypeFlags = vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT;
 /// Swapchain images the compositor cycles through, plus spares for resizes.
 const MAX_SCANOUTS: usize = 6;
+/// Conversions that may be in flight at once. A low-priority queue often
+/// takes more than one panel frame to get to ours; with only one in flight
+/// every frame after a slow one was skipped.
+const SLOTS: usize = 3;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -59,6 +63,14 @@ struct Target {
     chroma_stride: u32,
 }
 
+/// One conversion's own command buffer, fence and descriptors, so several
+/// can be in flight.
+struct Slot {
+    cmd: vk::CommandBuffer,
+    fence: vk::Fence,
+    set: vk::DescriptorSet,
+}
+
 struct Scanout {
     /// Borrowed from the display (false: the GPU's own image, for tests).
     external: bool,
@@ -84,7 +96,7 @@ pub struct Gpu {
     layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
     descriptors: vk::DescriptorPool,
-    set: vk::DescriptorSet,
+    slots: Vec<Slot>,
     sampler: vk::Sampler,
     grid: Buffer,
     grid_w: u32,
@@ -92,8 +104,9 @@ pub struct Gpu {
     out: (u32, u32),
     scanouts: Vec<Scanout>,
     targets: Vec<Target>,
-    /// The conversion in flight: its encoder buffer and when it was submitted.
-    pending: Option<(usize, std::time::Instant)>,
+    /// Conversions in flight, oldest first: slot, encoder buffer, the
+    /// caller's tag (the frame's time) and when it was submitted.
+    pending: std::collections::VecDeque<(usize, usize, i64, std::time::Instant)>,
     gpu_us: Vec<u64>,
     /// Whether the queue got the low priority it asked for.
     pub low_priority: bool,
@@ -208,11 +221,17 @@ impl Gpu {
             device.destroy_shader_module(module, None);
 
             let sizes = [
-                vk::DescriptorPoolSize { ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER, descriptor_count: 1 },
-                vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_BUFFER, descriptor_count: 3 },
+                vk::DescriptorPoolSize { ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER, descriptor_count: SLOTS as u32 },
+                vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_BUFFER, descriptor_count: 3 * SLOTS as u32 },
             ];
-            let descriptors = device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(1).pool_sizes(&sizes), None)?;
-            let set = device.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default().descriptor_pool(descriptors).set_layouts(&set_layouts))?[0];
+            let descriptors = device.create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(SLOTS as u32).pool_sizes(&sizes), None)?;
+            let all_layouts = [set_layout; SLOTS];
+            let sets = device.allocate_descriptor_sets(&vk::DescriptorSetAllocateInfo::default().descriptor_pool(descriptors).set_layouts(&all_layouts))?;
+            let cmds = device.allocate_command_buffers(&vk::CommandBufferAllocateInfo::default().command_pool(pool).command_buffer_count(SLOTS as u32))?;
+            let mut slots = Vec::with_capacity(SLOTS);
+            for (cmd, set) in cmds.into_iter().zip(sets) {
+                slots.push(Slot { cmd, fence: device.create_fence(&vk::FenceCreateInfo::default(), None)?, set });
+            }
             let sampler = device.create_sampler(
                 &vk::SamplerCreateInfo::default()
                     .mag_filter(vk::Filter::LINEAR)
@@ -238,7 +257,7 @@ impl Gpu {
                 layout,
                 pipeline,
                 descriptors,
-                set,
+                slots,
                 sampler,
                 grid: Buffer { buffer: vk::Buffer::null(), memory: vk::DeviceMemory::null() },
                 grid_w: grid.width,
@@ -246,7 +265,7 @@ impl Gpu {
                 out: (out_w, out_h),
                 scanouts: Vec::new(),
                 targets: Vec::new(),
-                pending: None,
+                pending: std::collections::VecDeque::new(),
                 gpu_us: Vec::new(),
                 low_priority,
                 modifiers,
@@ -360,13 +379,14 @@ impl Gpu {
         }
     }
 
-    /// Waits up to `timeout` for the running conversion; its time if it finished.
+    /// Waits up to `timeout` for the oldest conversion; its time if it finished.
     pub fn wait(&mut self, timeout: std::time::Duration) -> Result<Option<std::time::Duration>> {
-        let Some((_, since)) = self.pending else { bail!("nothing is running") };
+        let Some(&(slot, _, _, since)) = self.pending.front() else { bail!("nothing is running") };
+        let fence = self.slots[slot].fence;
         while since.elapsed() < timeout {
-            if unsafe { self.device.get_fence_status(self.fence) }? {
-                unsafe { self.device.reset_fences(&[self.fence]) }?;
-                self.pending = None;
+            if unsafe { self.device.get_fence_status(fence) }? {
+                unsafe { self.device.reset_fences(&[fence]) }?;
+                self.pending.pop_front();
                 return Ok(Some(since.elapsed()));
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
@@ -415,21 +435,28 @@ impl Gpu {
         Ok(())
     }
 
-    /// True while a conversion is still running on the GPU.
+    /// True while no further conversion can start.
     pub fn busy(&self) -> bool {
-        self.pending.is_some()
+        self.pending.len() >= self.slots.len()
     }
 
-    /// The encoder buffer of a finished conversion, if one just finished.
+    /// Conversions still running on the GPU.
+    pub fn in_flight(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// The encoder buffer and tag of the oldest conversion, if it finished.
     /// The recorder never waits on the GPU: a conversion that isn't done yet
-    /// is checked again at the next vblank, and frames are skipped meanwhile.
-    pub fn finished(&mut self) -> Result<Option<usize>> {
-        let Some((target, since)) = self.pending else { return Ok(None) };
-        if unsafe { self.device.get_fence_status(self.fence) }? {
-            unsafe { self.device.reset_fences(&[self.fence]) }?;
-            self.pending = None;
+    /// is checked again at the next vblank, and frames are skipped while
+    /// every slot is in use.
+    pub fn finished(&mut self) -> Result<Option<(usize, i64)>> {
+        let Some(&(slot, target, tag, since)) = self.pending.front() else { return Ok(None) };
+        let fence = self.slots[slot].fence;
+        if unsafe { self.device.get_fence_status(fence) }? {
+            unsafe { self.device.reset_fences(&[fence]) }?;
+            self.pending.pop_front();
             self.gpu_us.push(since.elapsed().as_micros() as u64);
-            return Ok(Some(target));
+            return Ok(Some((target, tag)));
         }
         if since.elapsed() > std::time::Duration::from_secs(2) {
             bail!("the GPU hasn't finished a frame in 2 s (it may have hit an error; see `sudo dmesg`)");
@@ -442,11 +469,34 @@ impl Gpu {
         std::mem::take(&mut self.gpu_us)
     }
 
-    /// Starts converting scanout `id` into encoder buffer `target`.
-    pub fn convert(&mut self, id: u64, target: usize) -> Result<()> {
-        if self.pending.is_some() {
-            bail!("a conversion is already running");
+    /// Uses a different grid from now on (same output size), e.g. to compare
+    /// framings in `--diagnose`.
+    pub fn set_grid(&mut self, grid: &Grid) -> Result<()> {
+        unsafe { self.device.device_wait_idle() }?;
+        self.pending.clear();
+        for s in &self.slots {
+            unsafe { self.device.reset_fences(&[s.fence]) }?;
         }
+        let new = self.upload(bytes_of(&grid.points))?;
+        let old = std::mem::replace(&mut self.grid, new);
+        unsafe {
+            self.device.destroy_buffer(old.buffer, None);
+            self.device.free_memory(old.memory, None);
+        }
+        self.grid_w = grid.width;
+        self.per_channel = grid.per_channel;
+        Ok(())
+    }
+
+    /// Starts converting scanout `id` into encoder buffer `target`; `tag`
+    /// comes back with it from `finished`.
+    pub fn convert(&mut self, id: u64, target: usize, tag: i64) -> Result<()> {
+        if self.busy() {
+            bail!("every conversion slot is in use");
+        }
+        let used: Vec<usize> = self.pending.iter().map(|p| p.0).collect();
+        let slot = (0..self.slots.len()).find(|i| !used.contains(i)).context("no free conversion slot")?;
+        let (cmd, fence, set) = (self.slots[slot].cmd, self.slots[slot].fence, self.slots[slot].set);
         let scanout = self.scanouts.iter().find(|s| s.id == id).context("unknown scanout buffer")?;
         let t = &self.targets[target];
         let d = &self.device;
@@ -456,14 +506,14 @@ impl Gpu {
             let luma = [whole(t.luma.buffer)];
             let chroma = [whole(t.chroma.buffer)];
             let writes = [
-                vk::WriteDescriptorSet::default().dst_set(self.set).dst_binding(0).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&image_info),
-                vk::WriteDescriptorSet::default().dst_set(self.set).dst_binding(1).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&grid),
-                vk::WriteDescriptorSet::default().dst_set(self.set).dst_binding(2).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&luma),
-                vk::WriteDescriptorSet::default().dst_set(self.set).dst_binding(3).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&chroma),
+                vk::WriteDescriptorSet::default().dst_set(set).dst_binding(0).descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER).image_info(&image_info),
+                vk::WriteDescriptorSet::default().dst_set(set).dst_binding(1).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&grid),
+                vk::WriteDescriptorSet::default().dst_set(set).dst_binding(2).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&luma),
+                vk::WriteDescriptorSet::default().dst_set(set).dst_binding(3).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&chroma),
             ];
             d.update_descriptor_sets(&writes, &[]);
 
-            d.begin_command_buffer(self.cmd, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
+            d.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
             let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
             // Take the buffers from the display and the encoder. The image
             // stays in GENERAL: any other layout lets the driver decompress
@@ -486,10 +536,10 @@ impl Gpu {
                     .buffer(b)
                     .size(vk::WHOLE_SIZE)
             }).collect();
-            d.cmd_pipeline_barrier(self.cmd, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[], &buffers_in, &[image_in]);
+            d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[], &buffers_in, &[image_in]);
 
-            d.cmd_bind_pipeline(self.cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
-            d.cmd_bind_descriptor_sets(self.cmd, vk::PipelineBindPoint::COMPUTE, self.layout, 0, &[self.set], &[]);
+            d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+            d.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::COMPUTE, self.layout, 0, &[set], &[]);
             let params = Params {
                 out_w: self.out.0,
                 out_h: self.out.1,
@@ -501,8 +551,8 @@ impl Gpu {
                 luma_offset: t.luma_offset,
                 chroma_offset: t.chroma_offset,
             };
-            d.cmd_push_constants(self.cmd, self.layout, vk::ShaderStageFlags::COMPUTE, 0, bytes_of(std::slice::from_ref(&params)));
-            d.cmd_dispatch(self.cmd, self.out.0.div_ceil(4 * 8), self.out.1.div_ceil(2 * 8), 1);
+            d.cmd_push_constants(cmd, self.layout, vk::ShaderStageFlags::COMPUTE, 0, bytes_of(std::slice::from_ref(&params)));
+            d.cmd_dispatch(cmd, self.out.0.div_ceil(4 * 8), self.out.1.div_ceil(2 * 8), 1);
 
             // ...and hand them back.
             let family = self.family;
@@ -522,13 +572,13 @@ impl Gpu {
                     .buffer(b)
                     .size(vk::WHOLE_SIZE)
             }).collect();
-            d.cmd_pipeline_barrier(self.cmd, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::BOTTOM_OF_PIPE, vk::DependencyFlags::empty(), &[], &buffers_out, &[image_out]);
-            d.end_command_buffer(self.cmd)?;
+            d.cmd_pipeline_barrier(cmd, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::BOTTOM_OF_PIPE, vk::DependencyFlags::empty(), &[], &buffers_out, &[image_out]);
+            d.end_command_buffer(cmd)?;
 
-            let cmds = [self.cmd];
-            d.queue_submit(self.queue, &[vk::SubmitInfo::default().command_buffers(&cmds)], self.fence)?;
+            let cmds = [cmd];
+            d.queue_submit(self.queue, &[vk::SubmitInfo::default().command_buffers(&cmds)], fence)?;
         }
-        self.pending = Some((target, std::time::Instant::now()));
+        self.pending.push_back((slot, target, tag, std::time::Instant::now()));
         Ok(())
     }
 
@@ -661,6 +711,9 @@ impl Drop for Gpu {
             d.destroy_pipeline_layout(self.layout, None);
             d.destroy_descriptor_set_layout(self.set_layout, None);
             d.destroy_fence(self.fence, None);
+            for s in &self.slots {
+                d.destroy_fence(s.fence, None);
+            }
             d.destroy_command_pool(self.pool, None);
             d.destroy_device(None);
             self.instance.destroy_instance(None);
@@ -718,12 +771,37 @@ mod tests {
         }
         gpu.add_test_scanout(1, sw, sh, &rgba).unwrap();
         let t = gpu.add_host_target(w, h).unwrap();
-        gpu.convert(1, t).unwrap();
+        gpu.convert(1, t, 0).unwrap();
         assert!(gpu.wait(std::time::Duration::from_secs(10)).unwrap().is_some(), "GPU didn't finish");
         let luma = gpu.read_luma(t, (w * h) as usize).unwrap();
         let row = &luma[(h / 2 * w) as usize..((h / 2 + 1) * w) as usize];
         // BT.709 limited range: red Y = 63, green Y = 173.
         assert!((row[4] as i32 - 63).abs() <= 2, "left {:?}", &row[..8]);
         assert!((row[(w - 5) as usize] as i32 - 173).abs() <= 2, "right {:?}", &row[(w - 8) as usize..]);
+
+        // Several in flight at once come back in order, with their tags.
+        let targets: Vec<usize> = (0..SLOTS).map(|_| gpu.add_host_target(w, h).unwrap()).collect();
+        for (i, &t) in targets.iter().enumerate() {
+            gpu.convert(1, t, i as i64 * 10).unwrap();
+        }
+        assert!(gpu.busy());
+        let start = std::time::Instant::now();
+        let mut done = Vec::new();
+        while done.len() < SLOTS && start.elapsed().as_secs() < 10 {
+            while let Some(d) = gpu.finished().unwrap() {
+                done.push(d);
+            }
+        }
+        let want: Vec<(usize, i64)> = targets.iter().enumerate().map(|(i, &t)| (t, i as i64 * 10)).collect();
+        assert_eq!(done, want);
+        assert_eq!(gpu.in_flight(), 0);
+
+        // A new grid takes effect: the plain crop of the right eye is all green.
+        let grid = lens::plain(w, h, 1, (sw, sh), f);
+        gpu.set_grid(&grid).unwrap();
+        gpu.convert(1, t, 0).unwrap();
+        assert!(gpu.wait(std::time::Duration::from_secs(10)).unwrap().is_some());
+        let luma = gpu.read_luma(t, (w * h) as usize).unwrap();
+        assert!(luma.iter().all(|&v| (v as i32 - 173).abs() <= 2), "{:?}", &luma[..8]);
     }
 }

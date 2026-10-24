@@ -27,6 +27,7 @@ pub struct Kms {
     path: PathBuf,
     helper: Option<grab::Helper>,
     pipe: u32,
+    crtc: crtc::Handle,
     plane: plane::Handle,
     /// Exact refresh rate, from the mode's pixel clock.
     pub refresh_hz: f64,
@@ -50,7 +51,7 @@ impl Kms {
         let (htotal, vtotal) = (mode.hsync().2 as f64, mode.vsync().2 as f64);
         let refresh_hz = if htotal > 0.0 && vtotal > 0.0 { mode.clock() as f64 * 1000.0 / (htotal * vtotal) } else { mode.vrefresh() as f64 };
         let (w, h) = mode.size();
-        Ok(Self { card, path: path.to_path_buf(), helper: None, pipe, plane, refresh_hz, size: (w as u32, h as u32) })
+        Ok(Self { card, path: path.to_path_buf(), helper: None, pipe, crtc, plane, refresh_hz, size: (w as u32, h as u32) })
     }
 
     /// Waits for the next vblank; returns its CLOCK_MONOTONIC time in µs.
@@ -62,6 +63,42 @@ impl Kms {
                 Ok(reply) => return Ok(reply.time().map_or_else(crate::now_us, |t| t.as_micros() as u64)),
             }
         }
+    }
+
+    /// Every plane showing something on the panels' display, one line each,
+    /// marking the one recorded. If the compositor stacks planes, the
+    /// recorded one could be a plain background.
+    pub fn describe_planes(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let Ok(handles) = self.card.plane_handles() else { return out };
+        for h in handles {
+            let Ok(info) = self.card.get_plane(h) else { continue };
+            if info.crtc() != Some(self.crtc) {
+                continue;
+            }
+            let Some(fb) = info.framebuffer() else { continue };
+            let zpos = self
+                .card
+                .get_properties(h)
+                .ok()
+                .and_then(|props| {
+                    let (ids, values) = props.as_props_and_values();
+                    ids.iter().zip(values).find_map(|(&id, &v)| {
+                        (self.card.get_property(id).ok()?.name().to_bytes() == b"zpos").then_some(v)
+                    })
+                })
+                .map_or("?".to_string(), |v| v.to_string());
+            let what = match self.card.get_planar_framebuffer(fb) {
+                Ok(f) => {
+                    let fourcc: String = (f.pixel_format() as u32).to_le_bytes().iter().map(|&b| b as char).collect();
+                    format!("{}x{} {} modifier {:#x}", f.size().0, f.size().1, fourcc, f.modifier().map(u64::from).unwrap_or(0))
+                }
+                Err(e) => format!("unreadable ({e})"),
+            };
+            let mark = if h == self.plane { " <- recorded" } else { "" };
+            out.push(format!("plane {} fb {} zpos {zpos}: {what}{mark}", u32::from(h), u32::from(fb)));
+        }
+        out
     }
 
     /// Framebuffer on the compositor's plane right now.

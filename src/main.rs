@@ -135,7 +135,11 @@ fn run() -> Result<()> {
         Shape::Wide => {
             let vr = vr.as_ref().map_err(|e| anyhow::anyhow!("16:9 needs SteamVR's lens data: {e:#}"))?;
             let eye = args.eye.or_else(|| vr.view_eye()).unwrap_or(0);
-            (1920, 1080, lens::framed(vr, eye, 1920, 1080, 1.0)?)
+            let grid = lens::framed(vr, eye, 1920, 1080, 1.0).unwrap_or_else(|e| {
+                eprintln!("16:9 framing failed ({e:#}); recording the middle of the eye without un-warping it");
+                lens::plain(1920, 1080, eye, kms.size, vr.frustum(eye))
+            });
+            (1920, 1080, grid)
         }
         Shape::Raw => {
             let (pw, ph) = kms.size;
@@ -175,7 +179,6 @@ fn run() -> Result<()> {
     let mut frame = 0u64;
     let mut last_status = 0u64;
     let mut last_log = start;
-    let mut pending_pts = 0i64;
     let mut stats = Stats::default();
     eprintln!(
         "recording {out_w}x{out_h} at {fps:.2} fps on {}, GPU queue {}; encoder {}",
@@ -213,21 +216,23 @@ fn run() -> Result<()> {
             last_status = vblank;
             control::status(if paused_since.is_some() { "paused" } else { "recording" }, seconds, &file, "");
         }
+        // Hand finished conversions to the encoder at every vblank, paused
+        // or not, so the GPU times in the log are real.
+        while let Some((target, pts)) = gpu.finished()? {
+            encoder.encode(target, pts.max(0) as u64)?;
+            stats.encoded += 1;
+        }
         if paused_since.is_some() || !frame.is_multiple_of(every) {
             continue;
         }
 
-        // Hand a finished conversion to the encoder, then start the next one
-        // unless the GPU is still busy (then this frame is skipped).
-        if let Some(target) = gpu.finished()? {
-            encoder.encode(target, pending_pts.max(0) as u64)?;
-            stats.encoded += 1;
-        }
+        // Start the next one unless every slot is still busy (then this
+        // frame is skipped).
         if gpu.busy() {
             stats.skipped_gpu += 1;
         } else {
-            match capture(&mut kms, &mut gpu, &mut encoder) {
-                Ok(true) => pending_pts = rel(vblank),
+            match capture(&mut kms, &mut gpu, &mut encoder, rel(vblank)) {
+                Ok(true) => {}
                 Ok(false) => stats.skipped_encoder += 1,
                 Err(e) => {
                     stats.failed += 1;
@@ -250,12 +255,12 @@ fn run() -> Result<()> {
 
     control::status("finishing", 0.0, &file, "");
     stats.log(&mut gpu);
-    // Let a conversion still in flight land in the recording.
+    // Let conversions still in flight land in the recording.
     for _ in 0..100 {
-        if let Some(target) = gpu.finished()? {
-            encoder.encode(target, pending_pts.max(0) as u64)?;
+        while let Some((target, pts)) = gpu.finished()? {
+            encoder.encode(target, pts.max(0) as u64)?;
         }
-        if !gpu.busy() {
+        if gpu.in_flight() == 0 {
             break;
         }
         std::thread::sleep(Duration::from_millis(2));
@@ -296,8 +301,9 @@ impl Stats {
 }
 
 /// One frame: borrow whatever is on screen and start converting it into a
-/// free encoder buffer. False if the encoder had no buffer free.
-fn capture(kms: &mut Kms, gpu: &mut Gpu, encoder: &mut Encoder) -> Result<bool> {
+/// free encoder buffer, to be shown at `pts`. False if the encoder had no
+/// buffer free.
+fn capture(kms: &mut Kms, gpu: &mut Gpu, encoder: &mut Encoder, pts: i64) -> Result<bool> {
     let Some(target) = encoder.free_input() else { return Ok(false) };
     let converted = (|| {
         let buf = kms.export_current()?;
@@ -306,7 +312,7 @@ fn capture(kms: &mut Kms, gpu: &mut Gpu, encoder: &mut Encoder) -> Result<bool> 
         if !gpu.knows(id) {
             gpu.add_scanout(id, buf)?;
         }
-        gpu.convert(id, target)
+        gpu.convert(id, target, pts)
     })();
     if let Err(e) = converted {
         encoder.release(target);
