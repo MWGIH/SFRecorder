@@ -2,8 +2,9 @@
 //! panel's scanout buffer in place and writes NV12 into the encoder's input
 //! buffer. Both buffers are borrowed as dmabufs, nothing is copied.
 //!
-//! The queue asks for low priority so the game and the compositor always go
-//! first; the recorder's frame can wait a millisecond, theirs can't.
+//! The queue runs at normal priority. A low-priority queue sounded kinder to
+//! the game, but on the Frame it never got a turn while a game ran (nothing
+//! finished in 3 s), and the conversion is one small compute pass. SFRECORDER_LOW_PRIORITY=1 asks for low priority.
 
 use std::ffi::CStr;
 use std::os::fd::{AsRawFd, IntoRawFd, OwnedFd};
@@ -118,7 +119,7 @@ pub struct Gpu {
 impl Gpu {
     /// Sets up the device and the conversion for one output size and grid.
     pub fn new(grid: &Grid, out_w: u32, out_h: u32) -> Result<Self> {
-        Self::with_priority(grid, out_w, out_h, std::env::var_os("SFRECORDER_NORMAL_PRIORITY").is_none())
+        Self::with_priority(grid, out_w, out_h, std::env::var_os("SFRECORDER_LOW_PRIORITY").is_some())
     }
 
     /// As `new`, choosing whether to ask for a low-priority queue.

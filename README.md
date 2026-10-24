@@ -98,8 +98,8 @@ game audio (+ mic) ────────────────────�
   for buffers that are on screen right now.
 - One compute pass per frame reads it, removes the lens warp for 16:9 using
   SteamVR's own lens data (worked out once at start), and writes NV12 straight
-  into the encoder's input buffer. The GPU queue runs at low priority so the
-  game always goes first.
+  into the encoder's input buffer. The GPU queue runs at normal priority: on
+  the Frame a low-priority queue never got a turn while a game was running.
 - No pixels touch the CPU. The recorder only wakes on vblank.
 - While recording, SFRecorder writes `$XDG_RUNTIME_DIR/sfrecorder/view.json`
   with the recorded view; SFrameOverlay uses it to keep its HUD inside the video

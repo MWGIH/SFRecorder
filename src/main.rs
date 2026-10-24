@@ -77,20 +77,6 @@ fn parse_args() -> Result<Args> {
                 }
                 std::process::exit(0);
             }
-            // Internal: see openvr::eye_rotation_isolated.
-            "--eye-rotation" => {
-                let eye: usize = value()?.parse().context("eye must be 0 or 1")?;
-                let cpp = value()? == "cpp";
-                let result = OpenVr::connect().and_then(|vr| vr.eye_rotation(eye.min(1), cpp));
-                match result {
-                    Ok(r) => println!("{}", sfrecorder::openvr::format_rotation(&r)),
-                    Err(e) => {
-                        println!("{e:#}");
-                        std::process::exit(1);
-                    }
-                }
-                std::process::exit(0);
-            }
             "--probe-mirror" => {
                 let dir = default_output()?.parent().unwrap().to_path_buf();
                 if let Err(e) = sfrecorder::mirror::probe(&dir) {
@@ -149,7 +135,7 @@ fn run() -> Result<()> {
         Shape::Wide => {
             let vr = vr.as_ref().map_err(|e| anyhow::anyhow!("16:9 needs SteamVR's lens data: {e:#}"))?;
             let eye = args.eye.or_else(|| vr.view_eye()).unwrap_or(0);
-            eprintln!("eye {eye} turned {:.2}° against the head, levelled", lens::roll_degrees(&lens::head_rotation(vr, eye)));
+            eprintln!("eye {eye} turned {:.2}° against the head, levelled", lens::roll_degrees(&lens::head_rotation(eye)));
             let grid = lens::framed(vr, eye, 1920, 1080, 1.0).unwrap_or_else(|e| {
                 eprintln!("16:9 framing failed ({e:#}); recording the middle of the eye without un-warping it");
                 lens::plain(1920, 1080, eye, kms.size, vr.frustum(eye))

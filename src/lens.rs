@@ -18,6 +18,12 @@ const FORWARD_SAMPLES: usize = 65;
 const FRINGE_PX: f64 = 0.33;
 /// Below this share of invertible points the lens data is not used.
 const MIN_CONVERGED: f64 = 0.5;
+/// Widest 16:9 picture, as the tangent of half its width (1.0 = 90° across).
+/// The Frame's whole view is far wider; recorded, it looks like a fisheye
+/// and its edges reach the black outside the lens.
+const MAX_HALF_WIDTH: f64 = 1.0;
+/// How close to the panel's edge (in eye-panel units) the picture may reach.
+const EDGE: f64 = 0.02;
 
 pub struct Grid {
     pub width: u32,
@@ -31,12 +37,15 @@ pub struct Grid {
     /// Share of grid points where SteamVR's lens data could be inverted
     /// (1.0 for Raw and for a plain crop).
     pub converged: f64,
+    /// Every point inverted and lands clear of the panel's edge, so no part
+    /// of the picture shows the black outside the lens.
+    pub clean: bool,
 }
 
 impl Grid {
     fn new(out_w: u32, out_h: u32) -> Self {
         let (width, height) = (out_w.div_ceil(STEP) + 1, out_h.div_ceil(STEP) + 1);
-        Self { width, height, per_channel: false, points: vec![[0.0; 2]; (width * height * 3) as usize], view: [0.0; 4], converged: 1.0 }
+        Self { width, height, per_channel: false, points: vec![[0.0; 2]; (width * height * 3) as usize], view: [0.0; 4], converged: 1.0, clean: true }
     }
 
     /// Scanout position (green) of an output pixel, for the diagnosis.
@@ -161,7 +170,8 @@ pub fn framed(vr: &OpenVr, eye: usize, out_w: u32, out_h: u32, zoom: f64) -> Res
         bail!("SteamVR's view for this eye makes no sense ({f:?})");
     }
     let forward = Forward::sample(vr, eye)?;
-    let g = framed_with(&forward, f, head_rotation(vr, eye), eye, out_w, out_h, zoom);
+    let rot = head_rotation(eye);
+    let g = fit(&forward, f, rot, eye, out_w, out_h, zoom);
     // Lens data the maths can't invert sends every pixel to the panel's
     // black edge; a recording of nothing is worse than an un-warped crop.
     let centre = g.at(out_w / 2, out_h / 2);
@@ -174,6 +184,21 @@ pub fn framed(vr: &OpenVr, eye: usize, out_w: u32, out_h: u32, zoom: f64) -> Res
         );
     }
     Ok(g)
+}
+
+/// `framed_with`, zoomed in until no part of the picture reaches past what
+/// the lens shows.
+fn fit(forward: &Forward, f: Frustum, rot: [[f64; 3]; 3], eye: usize, out_w: u32, out_h: u32, zoom: f64) -> Grid {
+    let mut zoom = zoom;
+    let mut g = framed_with(forward, f, rot, eye, out_w, out_h, zoom);
+    for _ in 0..20 {
+        if g.clean {
+            break;
+        }
+        zoom *= 1.04;
+        g = framed_with(forward, f, rot, eye, out_w, out_h, zoom);
+    }
+    g
 }
 
 /// True if a scanout point is well inside the given eye's half.
@@ -201,33 +226,18 @@ pub fn plain(out_w: u32, out_h: u32, eye: usize, panel: (u32, u32), f: Frustum) 
     g
 }
 
-/// The eye's turn against the head, plus SFRECORDER_ROLL (degrees) if set,
-/// for checking the levelling by hand.
-pub fn head_rotation(_vr: &OpenVr, eye: usize) -> [[f64; 3]; 3] {
-    static CACHE: std::sync::Mutex<[Option<[[f64; 3]; 3]>; 2]> = std::sync::Mutex::new([None; 2]);
-    let cached = CACHE.lock().unwrap()[eye.min(1)];
-    let r = cached.unwrap_or_else(|| {
-        let r = crate::openvr::eye_rotation_isolated(eye).unwrap_or_else(|e| {
-            eprintln!("   can't ask SteamVR how the eye is turned ({e:#}); the picture is not levelled");
-            crate::openvr::IDENTITY
-        });
-        CACHE.lock().unwrap()[eye.min(1)] = Some(r);
-        r
-    });
-    match std::env::var("SFRECORDER_ROLL").ok().and_then(|v| v.parse::<f64>().ok()) {
-        Some(deg) => {
-            let (s, c) = deg.to_radians().sin_cos();
-            let z = [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]];
-            let mut out = [[0.0; 3]; 3];
-            for (i, row) in out.iter_mut().enumerate() {
-                for (j, v) in row.iter_mut().enumerate() {
-                    *v = (0..3).map(|k| z[i][k] * r[k][j]).sum();
-                }
-            }
-            out
-        }
-        None => r,
-    }
+/// How each eye's picture is turned against the head on the Frame, in
+/// degrees (left, right). Its panels are canted; uncorrected, the left eye's
+/// recording leaned about 10° (measured from upright edges in a recording).
+/// SteamVR's own answer (GetEyeToHeadTransform) crashes on the Frame, so the
+/// value is built in. The eyes are mirror images, so the right eye turns the
+/// other way.
+pub const EYE_ROLL_DEGREES: [f64; 2] = [-10.0, 10.0];
+
+/// The eye's turn against the head, as a rotation (head = R * eye).
+pub fn head_rotation(eye: usize) -> [[f64; 3]; 3] {
+    let (s, c) = EYE_ROLL_DEGREES[eye.min(1)].to_radians().sin_cos();
+    [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]
 }
 
 /// The eye's roll against the head in degrees, for the log.
@@ -251,11 +261,18 @@ fn to_head(r: &[[f64; 3]; 3], t: [f64; 2]) -> [f64; 2] {
 
 /// Steam's recorder keeps the picture level with the head. On canted panels
 /// the eye's image is turned, so the output is laid out in head space,
-/// centred where the eye looks, and shrunk until it fits inside the eye's view.
+/// centred straight ahead (where the HUD and the game expect the middle,
+/// not the middle of the eye's lopsided view), at most MAX_HALF_WIDTH wide,
+/// and shrunk until it fits inside the eye's view.
 fn framed_with(forward: &Forward, f: Frustum, rot: [[f64; 3]; 3], eye: usize, out_w: u32, out_h: u32, zoom: f64) -> Grid {
-    let (ecx, ecy) = ((f.left + f.right) / 2.0, (f.top + f.bottom) / 2.0);
-    let [cx, cy] = to_head(&rot, [ecx, ecy]);
-    let (hw, hh) = ((f.right - f.left) / 2.0, (f.bottom - f.top) / 2.0);
+    let ahead = to_eye(&rot, [0.0, 0.0]);
+    let ahead_visible = ahead[0] > f.left && ahead[0] < f.right && ahead[1] > f.top && ahead[1] < f.bottom;
+    let (cx, cy, hw, hh) = if ahead_visible {
+        (0.0, 0.0, (-f.left).min(f.right).min(MAX_HALF_WIDTH), (-f.top).min(f.bottom))
+    } else {
+        let [cx, cy] = to_head(&rot, [(f.left + f.right) / 2.0, (f.top + f.bottom) / 2.0]);
+        (cx, cy, ((f.right - f.left) / 2.0).min(MAX_HALF_WIDTH), (f.bottom - f.top) / 2.0)
+    };
     let aspect = out_w as f64 / out_h as f64;
     let (mut half_w, mut half_h) = if hw / hh > aspect { (hh * aspect, hh) } else { (hw, hw / aspect) };
     let inside = |hw: f64, hh: f64| {
@@ -283,6 +300,7 @@ fn framed_with(forward: &Forward, f: Frustum, rot: [[f64; 3]; 3], eye: usize, ou
     let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
     let mut guess = [0.5, 0.5];
     let mut good = 0usize;
+    let mut clean = true;
     let cells = g.cells().collect::<Vec<_>>();
     for &(idx, x, y) in &cells {
         let [tx, ty] = to_eye(&rot, [cx + (x / out_w as f64 * 2.0 - 1.0) * half_w, cy + (y / out_h as f64 * 2.0 - 1.0) * half_h]);
@@ -294,6 +312,9 @@ fn framed_with(forward: &Forward, f: Frustum, rot: [[f64; 3]; 3], eye: usize, ou
             if c == 1 && ok {
                 good += 1;
                 guess = p;
+            }
+            if c == 1 && !(ok && (EDGE..1.0 - EDGE).contains(&p[0]) && (EDGE..1.0 - EDGE).contains(&p[1])) {
+                clean = false;
             }
         }
         for c in [0, 2] {
@@ -313,6 +334,7 @@ fn framed_with(forward: &Forward, f: Frustum, rot: [[f64; 3]; 3], eye: usize, ou
     g.per_channel = fringe_px > FRINGE_PX;
     g.view = [-(cx - half_w), cx + half_w, -(cy - half_h), cy + half_h];
     g.converged = good as f64 / cells.len() as f64;
+    g.clean = clean;
     g
 }
 
@@ -358,10 +380,40 @@ mod tests {
     }
 
     #[test]
+    fn picture_is_centred_straight_ahead_and_clear_of_the_edge() {
+        // The Frame's lopsided view: centring on its middle put the picture
+        // up and to the side, reaching the black outside the lens.
+        let f = Frustum { left: -1.661, right: 1.217, top: -1.735, bottom: 1.171 };
+        let g = fit(&barrel(), f, crate::openvr::IDENTITY, 0, 1920, 1080, 1.0);
+        let [l, r, u, d] = g.view;
+        assert!((l - r).abs() < 1e-9 && (u - d).abs() < 1e-9, "{:?}", g.view);
+        assert!(r <= MAX_HALF_WIDTH + 1e-9);
+        assert!(g.clean);
+        // A lens that shows less than the frustum makes it zoom in.
+        let narrow = Forward {
+            samples: barrel().samples.iter().map(|s| s.map(|[x, y]| [0.5 + (x - 0.5) * 0.6, 0.5 + (y - 0.5) * 0.6])).collect(),
+        };
+        let z = fit(&narrow, f, crate::openvr::IDENTITY, 0, 1920, 1080, 1.0);
+        assert!(z.clean && z.view[1] < r, "{:?}", z.view);
+    }
+
+    #[test]
+    fn built_in_roll_matches_the_frame() {
+        // Uncorrected, upright edges in a left-eye recording leaned with
+        // their tops to the left (about 10°). Levelling must undo exactly
+        // that: an upright line in head space reads such a line in the eye.
+        let r = head_rotation(0);
+        let (top, bottom) = (to_eye(&r, [0.0, -0.5]), to_eye(&r, [0.0, 0.5]));
+        let lean = (bottom[0] - top[0]).atan2(bottom[1] - top[1]).to_degrees();
+        assert!((lean - 10.0).abs() < 0.01, "{lean}");
+        assert!((roll_degrees(&head_rotation(1)) + roll_degrees(&r)).abs() < 1e-9);
+    }
+
+    #[test]
     fn rolled_eye_is_levelled() {
         let (s, c) = 10f64.to_radians().sin_cos();
         let rot = [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]];
-        let f = Frustum { left: -1.2, right: 1.2, top: -1.2, bottom: 1.2 };
+        let f = Frustum { left: -1.0, right: 1.0, top: -1.0, bottom: 1.0 };
         // A level head line maps to a line tilted by the roll in the eye.
         let (a, b) = (to_eye(&rot, [-0.5, 0.0]), to_eye(&rot, [0.5, 0.0]));
         let tilt = (b[1] - a[1]).atan2(b[0] - a[0]).to_degrees();
