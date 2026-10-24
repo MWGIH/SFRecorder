@@ -36,6 +36,7 @@ OVERLAY_SCRIPT = os.path.join(os.environ.get("XDG_DATA_HOME", os.path.join(HOME,
 OVERLAY_STATE = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, ".config")),
                              "frame-fps-overlay", "enabled")
 OVERLAY_POLL_SECONDS = 2.0
+OVERLAY_REPO = "github.com/MWGIH/SFrameOverlay"
 
 RAW_WARNING = ("Raw records both panels exactly as the headset shows them: lens-warped (fish-eye), "
                "with colour fringes at the edges and both eyes side by side. It isn't a normal-looking "
@@ -256,6 +257,9 @@ class Menu:
             draw.text((60, 535), "FPS overlay", font=self.font, fill=GREY, anchor="lm")
             draw.text((760, 535), "Not installed" if overlay == "missing" else "Off", font=self.font,
                       fill=GREY, anchor="rm")
+            if overlay == "missing":
+                draw.text((760, 580), "Get it: " + OVERLAY_REPO, font=self.small_font,
+                          fill=GREY, anchor="rm")
 
         draw.text((self.WIDTH // 2, 640), status, font=self.font, fill=RED if status.startswith("!") else WHITE,
                   anchor="mm")

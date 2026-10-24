@@ -11,9 +11,14 @@ SteamVR dashboard.
 ## Install
 
 ```sh
-git clone https://github.com/MWGIH/SFRecorder.git
-cd SFRecorder
-./install.sh
+cd ~ && (git clone https://github.com/MWGIH/SFRecorder.git || git -C SFRecorder pull) && SFRecorder/install.sh
+```
+
+SFrameOverlay (the FPS HUD) is a separate app with its own repo. To get its HUD
+in recordings, install it from there:
+
+```sh
+cd ~ && (git clone https://github.com/MWGIH/SFrameOverlay.git || git -C SFrameOverlay pull) && SFrameOverlay/install.sh
 ```
 
 The installer asks for your password once, to let the recorder read the panels.
