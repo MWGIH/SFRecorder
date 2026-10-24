@@ -81,7 +81,7 @@ pub fn run(card: &Path, out_dir: &Path) -> Result<()> {
             }
         };
         let prio = if gpu.low_priority { "low" } else { "normal" };
-        say!("   [{prio} priority] {}", gpu.describe_scanout(fourcc, modifier));
+        say!("   [{prio} priority] {} on {}", gpu.describe_scanout(fourcc, modifier), gpu.device_name);
         let result = (|| -> Result<Option<Duration>> {
             let fb = kms.current_fb()?.context("nothing on screen")?;
             let buf = kms.export(fb)?;

@@ -177,7 +177,12 @@ fn run() -> Result<()> {
     let mut last_log = start;
     let mut pending_pts = 0i64;
     let mut stats = Stats::default();
-    eprintln!("recording {out_w}x{out_h} at {fps:.2} fps, GPU queue {}", if gpu.low_priority { "low priority" } else { "normal priority" });
+    eprintln!(
+        "recording {out_w}x{out_h} at {fps:.2} fps on {}, GPU queue {}; encoder {}",
+        gpu.device_name,
+        if gpu.low_priority { "low priority" } else { "normal priority" },
+        encoder.info
+    );
     control::status("recording", 0.0, &file, "");
 
     while !STOP.load(Ordering::Relaxed) {

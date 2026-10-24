@@ -97,6 +97,8 @@ pub struct Gpu {
     gpu_us: Vec<u64>,
     /// Whether the queue got the low priority it asked for.
     pub low_priority: bool,
+    /// The Vulkan device in use, for the log.
+    pub device_name: String,
     modifiers: bool,
 }
 
@@ -124,6 +126,10 @@ impl Gpu {
             })
             .context("the GPU driver can't borrow display buffers (dmabuf import missing)")?;
         let has = |name: &CStr| available.iter().any(|e| e.as_c_str() == name);
+        let device_name = unsafe { instance.get_physical_device_properties(phys) }
+            .device_name_as_c_str()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
 
         let family = unsafe { instance.get_physical_device_queue_family_properties(phys) }
             .iter()
@@ -244,6 +250,7 @@ impl Gpu {
                 gpu_us: Vec::new(),
                 low_priority,
                 modifiers,
+                device_name,
             };
             gpu.grid = gpu.upload(bytes_of(&grid.points))?;
             Ok(gpu)
@@ -444,7 +451,7 @@ impl Gpu {
         let t = &self.targets[target];
         let d = &self.device;
         unsafe {
-            let image_info = [vk::DescriptorImageInfo::default().sampler(self.sampler).image_view(scanout.view).image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            let image_info = [vk::DescriptorImageInfo::default().sampler(self.sampler).image_view(scanout.view).image_layout(vk::ImageLayout::GENERAL)];
             let grid = [whole(self.grid.buffer)];
             let luma = [whole(t.luma.buffer)];
             let chroma = [whole(t.chroma.buffer)];
@@ -458,10 +465,13 @@ impl Gpu {
 
             d.begin_command_buffer(self.cmd, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
             let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
-            // Take the buffers from the display and the encoder...
+            // Take the buffers from the display and the encoder. The image
+            // stays in GENERAL: any other layout lets the driver decompress
+            // or discard the compositor's (compressed) buffer, which on the
+            // Frame read back as all black.
             let image_in = vk::ImageMemoryBarrier::default()
                 .old_layout(vk::ImageLayout::GENERAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .new_layout(vk::ImageLayout::GENERAL)
                 .src_queue_family_index(if scanout.external { self.foreign } else { vk::QUEUE_FAMILY_IGNORED })
                 .dst_queue_family_index(if scanout.external { self.family } else { vk::QUEUE_FAMILY_IGNORED })
                 .dst_access_mask(vk::AccessFlags::SHADER_READ)
@@ -497,7 +507,7 @@ impl Gpu {
             // ...and hand them back.
             let family = self.family;
             let image_out = vk::ImageMemoryBarrier::default()
-                .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .old_layout(vk::ImageLayout::GENERAL)
                 .new_layout(vk::ImageLayout::GENERAL)
                 .src_queue_family_index(if scanout.external { family } else { vk::QUEUE_FAMILY_IGNORED })
                 .dst_queue_family_index(if scanout.external { self.foreign } else { vk::QUEUE_FAMILY_IGNORED })
