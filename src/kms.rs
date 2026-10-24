@@ -86,6 +86,26 @@ impl Kms {
     }
 }
 
+impl Kms {
+    /// Whatever is on screen right now, as a dmabuf. The compositor flips
+    /// buffers every frame, so the one asked for can be gone by the time the
+    /// helper looks; then it simply asks again for the new one.
+    pub fn export_current(&mut self) -> Result<grab::Exported> {
+        let mut last = None;
+        for _ in 0..4 {
+            let fb = self.current_fb()?.context("nothing on screen, is SteamVR running?")?;
+            match self.export(fb) {
+                Ok(buf) => return Ok(buf),
+                Err(e) => last = Some(e),
+            }
+        }
+        if !grab::helper_unlocked() {
+            bail!("the panels are locked (an update replaced the panel helper): run the install line in a terminal once");
+        }
+        Err(last.unwrap())
+    }
+}
+
 fn biggest_plane(card: &Card, crtc: crtc::Handle) -> Result<plane::Handle> {
     let mut best = None;
     for handle in card.plane_handles()? {

@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use crate::encoder::{Encoder, Packet};
 use crate::gpu::Gpu;
@@ -33,8 +33,8 @@ pub fn run(card: &Path, out_dir: &Path) -> Result<()> {
     say!("1. Display");
     let mut kms = Kms::open(card)?;
     say!("   panels {}x{} at {:.2} Hz", kms.size.0, kms.size.1, kms.refresh_hz);
-    let fb = kms.current_fb()?.context("nothing on screen")?;
-    let buf = kms.export(fb)?;
+    say!("   panel helper unlocked: {}", crate::grab::helper_unlocked());
+    let buf = kms.export_current()?;
     say!(
         "   on screen: {}x{} {} modifier {:#x}, pitch {}, offset {}",
         buf.width,
@@ -83,8 +83,7 @@ pub fn run(card: &Path, out_dir: &Path) -> Result<()> {
         let prio = if gpu.low_priority { "low" } else { "normal" };
         say!("   [{prio} priority] {} on {}", gpu.describe_scanout(fourcc, modifier), gpu.device_name);
         let result = (|| -> Result<Option<Duration>> {
-            let fb = kms.current_fb()?.context("nothing on screen")?;
-            let buf = kms.export(fb)?;
+            let buf = kms.export_current()?;
             let id = kms::buffer_id(&buf.fd);
             kms::wait_rendered(&buf.fd, Duration::from_millis(50));
             gpu.add_scanout(id, buf)?;
@@ -138,8 +137,7 @@ pub fn run(card: &Path, out_dir: &Path) -> Result<()> {
             encoder.packets(&mut packets)?;
             continue;
         };
-        let fb = kms.current_fb()?.context("nothing on screen")?;
-        let buf = kms.export(fb)?;
+        let buf = kms.export_current()?;
         let id = kms::buffer_id(&buf.fd);
         kms::wait_rendered(&buf.fd, Duration::from_millis(8));
         if !gpu.knows(id) {

@@ -28,6 +28,15 @@ pub struct Exported {
     pub modifier: u64,
 }
 
+/// True if the installed helper still has the capability the installer gave
+/// it (rewriting the file, as an update can, removes it).
+pub fn helper_unlocked() -> bool {
+    let Some(path) = helper_path() else { return false };
+    let Ok(c) = std::ffi::CString::new(path.into_os_string().into_encoded_bytes()) else { return false };
+    let n = unsafe { libc::getxattr(c.as_ptr(), c"security.capability".as_ptr(), std::ptr::null_mut(), 0) };
+    n > 0
+}
+
 /// Where the installer puts the helper.
 pub fn helper_path() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/lib/sfrecorder/sfrecorder-grab"))

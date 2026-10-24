@@ -300,8 +300,7 @@ impl Stats {
 fn capture(kms: &mut Kms, gpu: &mut Gpu, encoder: &mut Encoder) -> Result<bool> {
     let Some(target) = encoder.free_input() else { return Ok(false) };
     let converted = (|| {
-        let fb = kms.current_fb()?.context("nothing on screen")?;
-        let buf = kms.export(fb)?;
+        let buf = kms.export_current()?;
         let id = kms::buffer_id(&buf.fd);
         kms::wait_rendered(&buf.fd, Duration::from_millis(8));
         if !gpu.knows(id) {
