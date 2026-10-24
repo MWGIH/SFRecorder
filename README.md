@@ -65,12 +65,30 @@ cargo build --release
 
 `install.sh` uses `target/release` when it exists, otherwise the latest release.
 
+### FFmpeg
+
+The recorder uses FFmpeg's libraries for the MP4 file and AAC audio. The
+installer checks whether the recorder can load SteamOS's own copy. If it can't
+(not installed, or a different version), it adds a small private copy to
+`~/.local/lib/sfrecorder`, which the recorder looks in first. SteamOS's system
+folders are read-only and reset by updates, so the installer never puts
+anything there.
+
+`scripts/build-ffmpeg.sh` builds that private copy (only the AAC encoder and
+MP4 writer). Build release binaries against it so the versions match:
+
+```sh
+scripts/build-ffmpeg.sh
+PKG_CONFIG_PATH=build/ffmpeg/lib/pkgconfig cargo build --release
+```
+
 ## To check on the headset
 
 - The 16:9 crop matches Steam's recorder, and the eyes are the right way up.
 - The encoder's input layout (NV12 vs NV12M, padded rows) and its largest size
   (Raw asks for 3840×1920).
-- FFmpeg libraries present on SteamOS for the Frame.
+- Whether SteamOS for the Frame has FFmpeg libraries the recorder can use, or
+  the private copy gets installed.
 
 ## License
 

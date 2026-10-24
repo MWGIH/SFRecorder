@@ -7,6 +7,10 @@ use std::process::Command;
 fn main() {
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
 
+    // install.sh puts a private FFmpeg next to the helper when SteamOS has
+    // none the recorder can load; this is where the engine looks for it.
+    println!("cargo:rustc-link-arg-bins=-Wl,-rpath,$ORIGIN/../lib/sfrecorder");
+
     println!("cargo:rerun-if-changed=src/v4l2_wrapper.h");
     bindgen::Builder::default()
         .header("src/v4l2_wrapper.h")

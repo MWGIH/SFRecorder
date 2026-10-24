@@ -32,6 +32,24 @@ else
 fi
 install -m 755 "$BUILD/sfrecorder" "$BIN_DIR/sfrecorder"
 install -m 755 "$BUILD/sfrecorder-grab" "$LIB_DIR/sfrecorder-grab"
+# FFmpeg (for the MP4 file and AAC audio): use SteamOS's own if the recorder
+# can load it, otherwise a small private copy kept with the recorder. SteamOS's
+# system folders are read-only and reset by updates, so nothing goes there.
+missing_libs() { ldd "$BIN_DIR/sfrecorder" | awk '/not found/ {print $1}'; }
+if missing_libs | grep -qE '^lib(avcodec|avformat|avutil|swresample)\.'; then
+    echo "==> FFmpeg not found, adding a private copy"
+    if [ -f "$SRC_DIR/ffmpeg-libs-$(uname -m).tar.gz" ]; then
+        tar -xzf "$SRC_DIR/ffmpeg-libs-$(uname -m).tar.gz" -C "$LIB_DIR"
+    else
+        curl -fsSL "$RELEASES/ffmpeg-libs-$(uname -m).tar.gz" | tar -xz -C "$LIB_DIR"
+    fi
+else
+    echo "==> FFmpeg found"
+fi
+if [ -n "$(missing_libs)" ]; then
+    echo "The recorder can't find these libraries: $(missing_libs | tr '\n' ' ')" >&2
+    exit 1
+fi
 install -m 755 "$SRC_DIR/tab/sfrecorder_tab.py" "$SHARE_DIR/sfrecorder_tab.py"
 install -m 755 "$SRC_DIR/uninstall.sh" "$SHARE_DIR/uninstall.sh"
 
