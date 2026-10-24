@@ -1,8 +1,8 @@
 # Builds SFRecorder and its private FFmpeg for the Steam Frame (aarch64) and
 # attaches both to a GitHub release, where install.sh downloads them from.
 #
-# Push a tag like v0.1.0 for a release, or run it by hand (Actions tab) to
-# make a test pre-release.
+# Push a tag like v0.1.0 for a release, or v0.1.0-test1 (or run it by hand
+# from the Actions tab) for a test pre-release.
 name: Release
 
 on:
@@ -49,6 +49,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then pre=--prerelease; else pre=; fi
+          # Hand-run builds and tags like v0.1.0-test1 are test pre-releases.
+          case "${{ github.event_name }}:$TAG" in workflow_dispatch:*|*-*) pre=--prerelease ;; *) pre= ;; esac
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" $pre --target "$GITHUB_SHA" --title "$TAG" --notes "Built from $GITHUB_SHA"
           gh release upload "$TAG" sfrecorder-aarch64.tar.gz ffmpeg-libs-aarch64.tar.gz --clobber
