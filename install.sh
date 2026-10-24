@@ -91,6 +91,11 @@ cp "$LIB_DIR/libopenvr_api.so" "$PKG_DIR/libopenvr_api_64.so"
 if [ "$HELPER_CHANGED" = 0 ] && getcap "$HELPER" 2>/dev/null | grep -q cap_sys_admin; then
     echo "==> Panels already unlocked"
     rm -f "$CONFIG_DIR/needs_unlock"
+elif sudo -n setcap cap_sys_admin+ep "$HELPER" 2>/dev/null; then
+    # sudo needs no password here (as on the Frame), so this also works when
+    # updating from the tab, with no terminal.
+    echo "==> Panels unlocked"
+    rm -f "$CONFIG_DIR/needs_unlock"
 elif [ -t 0 ]; then
     echo "==> Unlocking the panels (asks for your password)"
     if ! sudo setcap cap_sys_admin+ep "$HELPER"; then
