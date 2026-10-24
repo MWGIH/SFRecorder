@@ -12,6 +12,8 @@ use anyhow::{bail, Context, Result};
 
 use crate::openvr::{self, OpenVr};
 
+const SHOW_MIRROR_WINDOW: usize = 27;
+const IS_MIRROR_WINDOW_VISIBLE: usize = 29;
 const GET_MIRROR_TEXTURE_GL: usize = 37;
 const RELEASE_SHARED_GL_TEXTURE: usize = 38;
 const LOCK_GL_SHARED_TEXTURE: usize = 39;
@@ -186,6 +188,17 @@ pub fn probe(out_dir: &Path) -> Result<()> {
         let release: unsafe extern "C" fn(u32, Ptr) -> bool = openvr::slot(compositor, RELEASE_SHARED_GL_TEXTURE);
         let lock: unsafe extern "C" fn(Ptr) = openvr::slot(compositor, LOCK_GL_SHARED_TEXTURE);
         let unlock: unsafe extern "C" fn(Ptr) = openvr::slot(compositor, UNLOCK_GL_SHARED_TEXTURE);
+
+        // SteamVR may only make the mirror image while its mirror (VR View)
+        // window is up; the Frame has no menu entry for it, so ask directly.
+        let show: unsafe extern "C" fn() = openvr::slot(compositor, SHOW_MIRROR_WINDOW);
+        let visible: unsafe extern "C" fn() -> bool = openvr::slot(compositor, IS_MIRROR_WINDOW_VISIBLE);
+        let was_visible = visible();
+        if !was_visible {
+            show();
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+        println!("mirror window: {} before, {} now", if was_visible { "open" } else { "closed" }, if visible() { "open" } else { "closed" });
 
         for (eye, name) in [(0, "left"), (1, "right")] {
             let (mut tex, mut handle) = (0u32, std::ptr::null_mut());
