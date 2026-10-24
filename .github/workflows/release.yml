@@ -1,15 +1,17 @@
 # Builds SFRecorder and its private FFmpeg for the Steam Frame (aarch64) and
 # attaches both to a GitHub release, where install.sh downloads them from.
 #
-# Push a tag like v0.1.0 for a release. Pushes to the test branch (or a run
-# by hand from the Actions tab) update the "test" pre-release.
+# Every push to main publishes a release v0.1.<run number>, which becomes the
+# latest one install.sh downloads. A tag like v0.2.0 also makes a release.
+# Pushes to the test branch (or a run by hand from the Actions tab) update
+# the "test" pre-release.
 name: Release
 
 on:
   push:
     tags: ["v*"]
     # Test builds: every push to this branch updates the "test" pre-release.
-    branches: ["claude/project-thread-vjosj1"]
+    branches: ["main", "claude/project-thread-vjosj1"]
   workflow_dispatch:
     inputs:
       tag:
@@ -54,10 +56,11 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.inputs.tag || (github.ref_type == 'tag' && github.ref_name) || 'test' }}
+          TAG: ${{ github.event.inputs.tag || (github.ref_type == 'tag' && github.ref_name) || (github.ref_name == 'main' && format('v0.1.{0}', github.run_number)) || 'test' }}
         run: |
-          # Hand-run builds and tags like v0.1.0-test1 are test pre-releases.
-          case "${{ github.ref_type }}:$TAG" in branch:*|*-*) pre=--prerelease ;; *) pre= ;; esac
+          # Test-branch and hand-run builds, and tags like v0.1.0-test1, are
+          # test pre-releases; main builds and plain tags are releases.
+          case "${{ github.ref_name }}:$TAG" in main:*) pre= ;; *:test|*-*) pre=--prerelease ;; *) pre= ;; esac
           # A test release always points at the build it holds.
           if [ "$TAG" = test ]; then gh release delete test --cleanup-tag --yes 2>/dev/null || true; fi
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" $pre --target "$GITHUB_SHA" --title "$TAG" --notes "Built from $GITHUB_SHA"

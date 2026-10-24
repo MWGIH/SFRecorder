@@ -4,14 +4,30 @@ Records what the Steam Frame's panels show, Steam overlays included, with as
 little cost to the game as possible. Start and stop it from its own tab in the
 SteamVR dashboard.
 
-> **Status: first build, not yet tested on a Steam Frame.** The pieces compile
-> and the MP4 writer is tested, but the capture, framing and encoder still need
-> checking on the headset (see [To check on the headset](#to-check-on-the-headset)).
+> **Status: early version.** Recording, audio and the FPS overlay work on the
+> Steam Frame; levelling the 16:9 picture is still being checked.
 
-## Test build (headset)
+## Install
 
-Run these in a terminal on the Frame. They use the `claude/project-thread-vjosj1`
-branch and the `test` pre-release.
+```sh
+cd ~ && (git clone https://github.com/MWGIH/SFRecorder.git || git -C SFRecorder pull) && SFRecorder/install.sh
+```
+
+SFrameOverlay (the FPS HUD) is a separate app with its own repo. To get its HUD
+in recordings, install it from there:
+
+```sh
+cd ~ && (git clone https://github.com/MWGIH/SFrameOverlay.git || git -C SFrameOverlay pull) && SFrameOverlay/install.sh
+```
+
+The installer asks for your password once, to let the recorder read the panels.
+To remove it: `~/.local/share/sfrecorder/uninstall.sh` (recordings are kept).
+
+## Test builds
+
+For trying changes before they reach `main`. Run these in a terminal on the
+Frame. They use the `claude/project-thread-vjosj1` branch and the `test`
+pre-release.
 
 **1. Mirror test** (no password, installs nothing). Start a game, turn the FPS
 overlay on and open a Steam overlay, then run:
@@ -34,27 +50,12 @@ It also saves what the GPU made of the screen as `diagnose-frame.bmp` (the
 `~/Videos/SFRecorder`. If only the 16:9 one is black, the framing is wrong; if
 both are, the GPU reads the panel's buffer as black.
 
-**2. Install the test version:**
+**2. Install the test version.** To go back to normal releases, run
+`git -C ~/SFRecorder checkout main` and then the Install line above.
 
 ```sh
 cd ~ && (git clone -b claude/project-thread-vjosj1 https://github.com/MWGIH/SFRecorder.git || git -C SFRecorder pull) && SFRECORDER_TAG=test SFRecorder/install.sh
 ```
-
-## Install
-
-```sh
-cd ~ && (git clone https://github.com/MWGIH/SFRecorder.git || git -C SFRecorder pull) && SFRecorder/install.sh
-```
-
-SFrameOverlay (the FPS HUD) is a separate app with its own repo. To get its HUD
-in recordings, install it from there:
-
-```sh
-cd ~ && (git clone https://github.com/MWGIH/SFrameOverlay.git || git -C SFrameOverlay pull) && SFrameOverlay/install.sh
-```
-
-The installer asks for your password once, to let the recorder read the panels.
-To remove it: `~/.local/share/sfrecorder/uninstall.sh` (recordings are kept).
 
 ## The SFRecorder tab
 
@@ -123,8 +124,10 @@ PKG_CONFIG_PATH=build/ffmpeg/lib/pkgconfig cargo build --release
 ### Releases
 
 `.github/workflows/release.yml` builds the engine and the private FFmpeg for
-the Frame (aarch64) on GitHub and attaches both to a release. Push a `v*` tag
-for a release. Pushes to the test branch update the `test` pre-release. To
+the Frame (aarch64) on GitHub and attaches both to a release. Every push to
+`main` publishes a new release (`v0.1.<build number>`), which `install.sh` and
+the tab's Update button pick up. Pushes to the test branch update the `test`
+pre-release. To
 install a test build:
 
 ```sh
@@ -133,7 +136,7 @@ SFRECORDER_TAG=test SFRecorder/install.sh
 
 ## To check on the headset
 
-- The 16:9 crop matches Steam's recorder, and the eyes are the right way up.
+- The 16:9 crop matches Steam's recorder and is level (canted panels).
 - The encoder's input layout (NV12 vs NV12M, padded rows) and its largest size
   (Raw asks for 3840×1920).
 - Whether SteamOS for the Frame has FFmpeg libraries the recorder can use, or
