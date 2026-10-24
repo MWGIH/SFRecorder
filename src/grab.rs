@@ -14,7 +14,11 @@ use std::process::{Child, Command, Stdio};
 use anyhow::{bail, Context, Result};
 use drm::control::{framebuffer, Device as ControlDevice};
 
-pub const VERSION: u32 = 1;
+/// The helper's version. Bump it whenever the helper's code changes:
+/// install.sh only replaces the installed helper (which drops its unlock and
+/// asks for the password again) when this differs. The recorder refuses a
+/// helper of another version.
+pub const VERSION: u32 = 2;
 const REPLY_LEN: usize = 32;
 
 /// One framebuffer, exported.

@@ -41,9 +41,12 @@ else
     curl -fsSL "$RELEASES/sfrecorder-$(uname -m).tar.gz" | tar -xz -C "$BUILD"
 fi
 install -m 755 "$BUILD/sfrecorder" "$BIN_DIR/sfrecorder"
-# Rewriting the helper would drop its unlock, so it's only replaced when it
-# actually changed; most updates then need no password.
-if [ -f "$HELPER" ] && cmp -s "$BUILD/sfrecorder-grab" "$HELPER"; then
+# Rewriting the helper would drop its unlock, so it's only replaced when its
+# version changed (every release rebuilds it, so its bytes always differ);
+# most updates then need no password.
+helper_version() { "$1" --version 2>/dev/null || true; }
+NEW_HELPER_VERSION="$(helper_version "$BUILD/sfrecorder-grab")"
+if [ -f "$HELPER" ] && [ -n "$NEW_HELPER_VERSION" ] && [ "$(helper_version "$HELPER")" = "$NEW_HELPER_VERSION" ]; then
     HELPER_CHANGED=0
 else
     install -m 755 "$BUILD/sfrecorder-grab" "$HELPER"

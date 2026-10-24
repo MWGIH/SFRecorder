@@ -4,6 +4,11 @@
 
 fn main() {
     let card = std::env::args_os().nth(1).unwrap_or_else(|| "/dev/dri/card0".into());
+    // install.sh compares this to decide whether the helper needs replacing.
+    if card == "--version" {
+        println!("{}", sfrecorder::grab::VERSION);
+        return;
+    }
     if let Err(e) = sfrecorder::grab::serve(std::path::Path::new(&card)) {
         eprintln!("sfrecorder-grab: {e:#}");
         std::process::exit(1);
