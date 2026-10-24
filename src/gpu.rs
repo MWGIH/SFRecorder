@@ -49,6 +49,8 @@ struct Buffer {
 }
 
 struct Target {
+    /// Borrowed from the encoder (false: the GPU's own memory, for tests).
+    external: bool,
     luma: Buffer,
     chroma: Buffer,
     luma_offset: u32,
@@ -58,6 +60,8 @@ struct Target {
 }
 
 struct Scanout {
+    /// Borrowed from the display (false: the GPU's own image, for tests).
+    external: bool,
     id: u64,
     image: vk::Image,
     view: vk::ImageView,
@@ -93,20 +97,22 @@ pub struct Gpu {
     gpu_us: Vec<u64>,
     /// Whether the queue got the low priority it asked for.
     pub low_priority: bool,
+    modifiers: bool,
 }
 
 impl Gpu {
     /// Sets up the device and the conversion for one output size and grid.
     pub fn new(grid: &Grid, out_w: u32, out_h: u32) -> Result<Self> {
+        Self::with_priority(grid, out_w, out_h, std::env::var_os("SFRECORDER_NORMAL_PRIORITY").is_none())
+    }
+
+    /// As `new`, choosing whether to ask for a low-priority queue.
+    pub fn with_priority(grid: &Grid, out_w: u32, out_h: u32, wants_low: bool) -> Result<Self> {
         let entry = unsafe { ash::Entry::load() }.context("no Vulkan driver")?;
         let app = vk::ApplicationInfo::default().application_name(c"sfrecorder").api_version(vk::API_VERSION_1_1);
         let instance = unsafe { entry.create_instance(&vk::InstanceCreateInfo::default().application_info(&app), None) }?;
 
-        let required = [
-            ash::khr::external_memory_fd::NAME,
-            ash::ext::external_memory_dma_buf::NAME,
-            ash::ext::image_drm_format_modifier::NAME,
-        ];
+        let required = [ash::khr::external_memory_fd::NAME, ash::ext::external_memory_dma_buf::NAME];
         let (phys, available) = unsafe { instance.enumerate_physical_devices()? }
             .into_iter()
             .find_map(|p| {
@@ -125,6 +131,12 @@ impl Gpu {
             .context("no compute queue")? as u32;
 
         let mut extensions: Vec<*const std::ffi::c_char> = required.iter().map(|n| n.as_ptr()).collect();
+        // Needed to read the display's (tiled, compressed) buffers; only a
+        // test driver lacks it, and then only display buffers can't be read.
+        let modifiers = has(ash::ext::image_drm_format_modifier::NAME);
+        if modifiers {
+            extensions.push(ash::ext::image_drm_format_modifier::NAME.as_ptr());
+        }
         // The modifier extension depends on these on 1.1 drivers.
         for dep in [ash::khr::image_format_list::NAME, ash::khr::bind_memory2::NAME, ash::khr::sampler_ycbcr_conversion::NAME] {
             if has(dep) {
@@ -138,7 +150,6 @@ impl Gpu {
             vk::QUEUE_FAMILY_EXTERNAL
         };
         let mut priority = vk::DeviceQueueGlobalPriorityCreateInfoKHR::default().global_priority(vk::QueueGlobalPriorityKHR::LOW);
-        let wants_low = std::env::var_os("SFRECORDER_NORMAL_PRIORITY").is_none();
         let low_priority = if !wants_low {
             false
         } else if has(ash::khr::global_priority::NAME) {
@@ -156,7 +167,13 @@ impl Gpu {
             queue_info = queue_info.push_next(&mut priority);
         }
         let queues = [queue_info];
-        let device = unsafe { instance.create_device(phys, &vk::DeviceCreateInfo::default().queue_create_infos(&queues).enabled_extension_names(&extensions), None) }
+        // Out-of-range writes are dropped instead of faulting the GPU, in case
+        // an encoder lays its buffer out differently than it says.
+        let supported = unsafe { instance.get_physical_device_features(phys) };
+        let features = vk::PhysicalDeviceFeatures::default().robust_buffer_access(supported.robust_buffer_access == vk::TRUE);
+        let device = unsafe {
+            instance.create_device(phys, &vk::DeviceCreateInfo::default().queue_create_infos(&queues).enabled_extension_names(&extensions).enabled_features(&features), None)
+        }
             .context("creating the Vulkan device")?;
         let memory_fd = ash::khr::external_memory_fd::Device::new(&instance, &device);
         let queue = unsafe { device.get_device_queue(family, 0) };
@@ -226,6 +243,7 @@ impl Gpu {
                 pending: None,
                 gpu_us: Vec::new(),
                 low_priority,
+                modifiers,
             };
             gpu.grid = gpu.upload(bytes_of(&grid.points))?;
             Ok(gpu)
@@ -237,6 +255,7 @@ impl Gpu {
         let luma = self.import_buffer(planes.luma)?;
         let chroma = self.import_buffer(planes.chroma)?;
         self.targets.push(Target {
+            external: true,
             luma,
             chroma,
             luma_offset: planes.luma_offset,
@@ -245,6 +264,128 @@ impl Gpu {
             chroma_stride: planes.chroma_stride,
         });
         Ok(self.targets.len() - 1)
+    }
+
+    /// A stand-in for a display buffer, in the GPU's own memory (for tests):
+    /// RGBA8 pixels, uploaded once.
+    pub fn add_test_scanout(&mut self, id: u64, width: u32, height: u32, rgba: &[u8]) -> Result<()> {
+        let d = &self.device;
+        let staging = self.upload(rgba)?;
+        unsafe {
+            let format = vk::Format::R8G8B8A8_UNORM;
+            let image = d.create_image(
+                &vk::ImageCreateInfo::default()
+                    .image_type(vk::ImageType::TYPE_2D)
+                    .format(format)
+                    .extent(vk::Extent3D { width, height, depth: 1 })
+                    .mip_levels(1)
+                    .array_layers(1)
+                    .samples(vk::SampleCountFlags::TYPE_1)
+                    .tiling(vk::ImageTiling::OPTIMAL)
+                    .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST),
+                None,
+            )?;
+            let reqs = d.get_image_memory_requirements(image);
+            let types = self.instance.get_physical_device_memory_properties(self.phys);
+            let index = (0..types.memory_type_count).find(|&i| reqs.memory_type_bits & (1 << i) != 0).context("no memory for the test image")?;
+            let memory = d.allocate_memory(&vk::MemoryAllocateInfo::default().allocation_size(reqs.size).memory_type_index(index), None)?;
+            d.bind_image_memory(image, memory, 0)?;
+            let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
+            d.begin_command_buffer(self.cmd, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
+            let to_dst = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .image(image)
+                .subresource_range(range);
+            d.cmd_pipeline_barrier(self.cmd, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER, vk::DependencyFlags::empty(), &[], &[], &[to_dst]);
+            let region = vk::BufferImageCopy::default()
+                .image_subresource(vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1))
+                .image_extent(vk::Extent3D { width, height, depth: 1 });
+            d.cmd_copy_buffer_to_image(self.cmd, staging.buffer, image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]);
+            let to_general = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .new_layout(vk::ImageLayout::GENERAL)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .image(image)
+                .subresource_range(range);
+            d.cmd_pipeline_barrier(self.cmd, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::BOTTOM_OF_PIPE, vk::DependencyFlags::empty(), &[], &[], &[to_general]);
+            d.end_command_buffer(self.cmd)?;
+            let cmds = [self.cmd];
+            d.queue_submit(self.queue, &[vk::SubmitInfo::default().command_buffers(&cmds)], self.fence)?;
+            d.wait_for_fences(&[self.fence], true, u64::MAX)?;
+            d.reset_fences(&[self.fence])?;
+            d.destroy_buffer(staging.buffer, None);
+            d.free_memory(staging.memory, None);
+            let view = d.create_image_view(
+                &vk::ImageViewCreateInfo::default().image(image).view_type(vk::ImageViewType::TYPE_2D).format(format).subresource_range(range),
+                None,
+            )?;
+            self.scanouts.push(Scanout { external: false, id, image, view, memory });
+        }
+        Ok(())
+    }
+
+    /// A target in the GPU's own memory (for `--diagnose`): NV12 with the
+    /// given strides, readable afterwards with `read_target`.
+    pub fn add_host_target(&mut self, stride: u32, height: u32) -> Result<usize> {
+        let luma = self.upload(&vec![0u8; (stride * height) as usize])?;
+        let chroma = self.upload(&vec![0u8; (stride * height.div_ceil(2)) as usize])?;
+        self.targets.push(Target { external: false, luma, chroma, luma_offset: 0, luma_stride: stride, chroma_offset: 0, chroma_stride: stride });
+        Ok(self.targets.len() - 1)
+    }
+
+    /// The luma plane of a target made by `add_host_target`.
+    pub fn read_luma(&self, target: usize, len: usize) -> Result<Vec<u8>> {
+        let t = &self.targets[target];
+        if t.external {
+            bail!("only test targets can be read back");
+        }
+        unsafe {
+            let ptr = self.device.map_memory(t.luma.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())? as *const u8;
+            let out = std::slice::from_raw_parts(ptr, len).to_vec();
+            self.device.unmap_memory(t.luma.memory);
+            Ok(out)
+        }
+    }
+
+    /// Waits up to `timeout` for the running conversion; its time if it finished.
+    pub fn wait(&mut self, timeout: std::time::Duration) -> Result<Option<std::time::Duration>> {
+        let Some((_, since)) = self.pending else { bail!("nothing is running") };
+        while since.elapsed() < timeout {
+            if unsafe { self.device.get_fence_status(self.fence) }? {
+                unsafe { self.device.reset_fences(&[self.fence]) }?;
+                self.pending = None;
+                return Ok(Some(since.elapsed()));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        Ok(None)
+    }
+
+    /// What the driver says it can do with this scanout layout.
+    pub fn describe_scanout(&self, fourcc: u32, modifier: u64) -> String {
+        let Some(format) = vk_format(fourcc) else { return format!("format {fourcc:#x}: not supported by SFRecorder") };
+        let mut list = vk::DrmFormatModifierPropertiesListEXT::default();
+        let mut props = vk::FormatProperties2::default().push_next(&mut list);
+        unsafe { self.instance.get_physical_device_format_properties2(self.phys, format, &mut props) };
+        let mut mods = vec![vk::DrmFormatModifierPropertiesEXT::default(); list.drm_format_modifier_count as usize];
+        let mut list = vk::DrmFormatModifierPropertiesListEXT::default().drm_format_modifier_properties(&mut mods);
+        let mut props = vk::FormatProperties2::default().push_next(&mut list);
+        unsafe { self.instance.get_physical_device_format_properties2(self.phys, format, &mut props) };
+        match mods.iter().find(|m| m.drm_format_modifier == modifier) {
+            None => format!("{format:?} modifier {modifier:#x}: NOT supported by the Vulkan driver ({} others are)", mods.len()),
+            Some(m) => format!(
+                "{format:?} modifier {modifier:#x}: {} plane(s), sampled {}, linear filter {}",
+                m.drm_format_modifier_plane_count,
+                m.drm_format_modifier_tiling_features.contains(vk::FormatFeatureFlags::SAMPLED_IMAGE),
+                m.drm_format_modifier_tiling_features.contains(vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR)
+            ),
+        }
     }
 
     /// True if this scanout buffer is already borrowed (no need to export it again).
@@ -321,19 +462,20 @@ impl Gpu {
             let image_in = vk::ImageMemoryBarrier::default()
                 .old_layout(vk::ImageLayout::GENERAL)
                 .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .src_queue_family_index(self.foreign)
-                .dst_queue_family_index(self.family)
+                .src_queue_family_index(if scanout.external { self.foreign } else { vk::QUEUE_FAMILY_IGNORED })
+                .dst_queue_family_index(if scanout.external { self.family } else { vk::QUEUE_FAMILY_IGNORED })
                 .dst_access_mask(vk::AccessFlags::SHADER_READ)
                 .image(scanout.image)
                 .subresource_range(range);
-            let buffers_in = [t.luma.buffer, t.chroma.buffer].map(|b| {
+            let external: &[vk::Buffer] = if t.external { &[t.luma.buffer, t.chroma.buffer] } else { &[] };
+            let buffers_in: Vec<_> = external.iter().map(|&b| {
                 vk::BufferMemoryBarrier::default()
                     .src_queue_family_index(self.foreign)
                     .dst_queue_family_index(self.family)
                     .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
                     .buffer(b)
                     .size(vk::WHOLE_SIZE)
-            });
+            }).collect();
             d.cmd_pipeline_barrier(self.cmd, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::COMPUTE_SHADER, vk::DependencyFlags::empty(), &[], &buffers_in, &[image_in]);
 
             d.cmd_bind_pipeline(self.cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
@@ -357,19 +499,19 @@ impl Gpu {
             let image_out = vk::ImageMemoryBarrier::default()
                 .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                 .new_layout(vk::ImageLayout::GENERAL)
-                .src_queue_family_index(family)
-                .dst_queue_family_index(self.foreign)
+                .src_queue_family_index(if scanout.external { family } else { vk::QUEUE_FAMILY_IGNORED })
+                .dst_queue_family_index(if scanout.external { self.foreign } else { vk::QUEUE_FAMILY_IGNORED })
                 .src_access_mask(vk::AccessFlags::SHADER_READ)
                 .image(scanout.image)
                 .subresource_range(range);
-            let buffers_out = [t.luma.buffer, t.chroma.buffer].map(|b| {
+            let buffers_out: Vec<_> = external.iter().map(|&b| {
                 vk::BufferMemoryBarrier::default()
                     .src_queue_family_index(family)
                     .dst_queue_family_index(self.foreign)
                     .src_access_mask(vk::AccessFlags::SHADER_WRITE)
                     .buffer(b)
                     .size(vk::WHOLE_SIZE)
-            });
+            }).collect();
             d.cmd_pipeline_barrier(self.cmd, vk::PipelineStageFlags::COMPUTE_SHADER, vk::PipelineStageFlags::BOTTOM_OF_PIPE, vk::DependencyFlags::empty(), &[], &buffers_out, &[image_out]);
             d.end_command_buffer(self.cmd)?;
 
@@ -381,6 +523,9 @@ impl Gpu {
     }
 
     fn import_image(&self, id: u64, buf: Exported) -> Result<Scanout> {
+        if !self.modifiers {
+            bail!("the GPU driver can't read display buffers (no VK_EXT_image_drm_format_modifier)");
+        }
         let format = vk_format(buf.fourcc).with_context(|| format!("unsupported panel format {:#x}", buf.fourcc))?;
         let d = &self.device;
         unsafe {
@@ -418,7 +563,7 @@ impl Gpu {
                     .subresource_range(vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1)),
                 None,
             )?;
-            Ok(Scanout { id, image, view, memory })
+            Ok(Scanout { external: true, id, image, view, memory })
         }
     }
 
@@ -536,4 +681,39 @@ fn vk_format(fourcc: u32) -> Option<vk::Format> {
         f if f == code(b"AB4H") || f == code(b"XB4H") => vk::Format::R16G16B16A16_SFLOAT,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lens;
+    use crate::openvr::Frustum;
+
+    /// Runs the real shader on whatever Vulkan driver is present (Mesa's
+    /// software one is enough): `cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    fn converts_a_frame_to_nv12() {
+        let (w, h) = (64u32, 32u32);
+        let f = Frustum { left: -1.0, right: 1.0, top: -1.0, bottom: 1.0 };
+        let grid = lens::raw(w, h, [f, f]);
+        let mut gpu = Gpu::with_priority(&grid, w, h, false).unwrap();
+        // Left half of the "panel" pure red, right half pure green.
+        let (sw, sh) = (128u32, 64u32);
+        let mut rgba = Vec::new();
+        for _ in 0..sh {
+            for x in 0..sw {
+                rgba.extend_from_slice(if x < sw / 2 { &[255, 0, 0, 255] } else { &[0, 255, 0, 255] });
+            }
+        }
+        gpu.add_test_scanout(1, sw, sh, &rgba).unwrap();
+        let t = gpu.add_host_target(w, h).unwrap();
+        gpu.convert(1, t).unwrap();
+        assert!(gpu.wait(std::time::Duration::from_secs(10)).unwrap().is_some(), "GPU didn't finish");
+        let luma = gpu.read_luma(t, (w * h) as usize).unwrap();
+        let row = &luma[(h / 2 * w) as usize..((h / 2 + 1) * w) as usize];
+        // BT.709 limited range: red Y = 63, green Y = 173.
+        assert!((row[4] as i32 - 63).abs() <= 2, "left {:?}", &row[..8]);
+        assert!((row[(w - 5) as usize] as i32 - 173).abs() <= 2, "right {:?}", &row[(w - 8) as usize..]);
+    }
 }

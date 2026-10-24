@@ -69,6 +69,14 @@ fn parse_args() -> Result<Args> {
             "--hud" => a.hud = value()? != "hide",
             "--out" => a.out = Some(PathBuf::from(value()?)),
             "--card" => a.card = PathBuf::from(value()?),
+            "--diagnose" => {
+                let dir = default_output()?.parent().unwrap().to_path_buf();
+                if let Err(e) = sfrecorder::diagnose::run(&a.card, &dir) {
+                    println!("Stopped: {e:#}");
+                    std::process::exit(1);
+                }
+                std::process::exit(0);
+            }
             "--probe-mirror" => {
                 let dir = default_output()?.parent().unwrap().to_path_buf();
                 if let Err(e) = sfrecorder::mirror::probe(&dir) {

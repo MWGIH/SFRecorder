@@ -7,6 +7,7 @@
 
 pub mod audio;
 pub mod control;
+pub mod diagnose;
 pub mod encoder;
 pub mod gpu;
 pub mod grab;

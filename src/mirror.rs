@@ -235,7 +235,7 @@ pub fn probe(out_dir: &Path) -> Result<()> {
 }
 
 /// 32-bit BMP; OpenGL rows are bottom-up, which is BMP's own order.
-fn write_bmp(path: &PathBuf, w: u32, h: u32, rgba: &[u8]) -> Result<()> {
+pub(crate) fn write_bmp(path: &PathBuf, w: u32, h: u32, rgba: &[u8]) -> Result<()> {
     let size = 54 + rgba.len() as u32;
     let mut out = Vec::with_capacity(size as usize);
     out.extend_from_slice(b"BM");

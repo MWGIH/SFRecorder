@@ -22,6 +22,16 @@ cd ~ && (git clone -b claude/project-thread-vjosj1 https://github.com/MWGIH/SFRe
 
 It saves `mirror-test-left.bmp` and `mirror-test-right.bmp` in `~/Videos/SFRecorder`.
 
+**Diagnose** (after installing). With a VR game running, this tests each step
+of recording on its own and prints what happened:
+
+```sh
+~/.local/bin/sfrecorder --diagnose
+```
+
+It also saves what the GPU made of the screen as `diagnose-frame.bmp` in
+`~/Videos/SFRecorder`.
+
 **2. Install the test version:**
 
 ```sh

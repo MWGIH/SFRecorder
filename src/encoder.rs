@@ -84,6 +84,8 @@ pub struct Encoder {
     chroma_size: u32,
     planes: u32,
     pub path: PathBuf,
+    /// The input layout the driver reported, for `--diagnose`.
+    pub info: String,
 }
 
 impl Encoder {
@@ -171,6 +173,16 @@ impl Encoder {
             targets.push(TargetPlanes { luma, luma_offset: 0, luma_stride: stride, chroma, chroma_offset, chroma_stride });
         }
         let luma_size = stride * scanlines;
+        let info = format!(
+            "{} input {}x{}, {} plane(s), stride {}, sizeimage {:?}, buffer {} bytes",
+            if pixelformat == NV12M { "NV12M" } else { "NV12" },
+            { pix.width },
+            { pix.height },
+            planes,
+            stride,
+            (0..planes as usize).map(|i| { pix.plane_fmt[i].sizeimage }).collect::<Vec<_>>(),
+            targets.first().map_or(0, |t: &TargetPlanes| unsafe { libc::lseek(t.luma.as_raw_fd(), 0, libc::SEEK_END) })
+        );
         let chroma_size = if planes == 2 { pix.plane_fmt[1].bytesperline * scanlines.div_ceil(2) } else { 0 };
 
         let mut req = v4l2_requestbuffers { count: OUTPUTS, type_: CAPTURE, memory: MMAP, ..zeroed() };
@@ -189,7 +201,7 @@ impl Encoder {
             coded.push(Mapped { ptr: ptr.cast(), len });
         }
 
-        let mut enc = Self { dev, coded, free: (0..targets.len()).collect(), luma_size, chroma_size, planes, path };
+        let mut enc = Self { dev, coded, free: (0..targets.len()).collect(), luma_size, chroma_size, planes, path, info };
         for i in 0..enc.coded.len() {
             enc.queue_coded(i as u32)?;
         }
