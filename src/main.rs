@@ -214,7 +214,9 @@ fn run() -> Result<()> {
             }
         }
 
-        let seconds = rel(vblank).max(0) as f64 / 1e6;
+        // The recording's length: it stands still while paused (the tab is
+        // open then, and redrawing it for a changing timer made it flicker).
+        let seconds = rel(paused_since.unwrap_or(vblank)).max(0) as f64 / 1e6;
         if vblank >= last_status + 1_000_000 {
             last_status = vblank;
             control::status(if paused_since.is_some() { "paused" } else { "recording" }, seconds, &file, "");
