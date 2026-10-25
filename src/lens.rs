@@ -233,11 +233,28 @@ pub fn plain(out_w: u32, out_h: u32, eye: usize, panel: (u32, u32), f: Frustum) 
 /// value is built in. The eyes are mirror images, so the right eye turns the
 /// other way.
 pub const EYE_ROLL_DEGREES: [f64; 2] = [-10.0, 10.0];
+/// How far each eye's picture is tilted down against the head, in degrees.
+/// The Frame's view reaches much further up than down (tangents -1.735 and
+/// 1.171): the eye looks about 15.7° below straight ahead, which is the
+/// middle of that range. Framed as if it looked straight ahead, the FPS HUD
+/// (placed above straight ahead) came out at the very top of the picture,
+/// just where this offset puts it.
+pub const EYE_PITCH_DEGREES: f64 = 15.7;
 
-/// The eye's turn against the head, as a rotation (head = R * eye).
+/// The eye's turn against the head, as a rotation (head = R * eye): tilted
+/// down, then rolled about its own axis.
 pub fn head_rotation(eye: usize) -> [[f64; 3]; 3] {
-    let (s, c) = EYE_ROLL_DEGREES[eye.min(1)].to_radians().sin_cos();
-    [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]
+    let (sr, cr) = EYE_ROLL_DEGREES[eye.min(1)].to_radians().sin_cos();
+    let (sp, cp) = (-EYE_PITCH_DEGREES).to_radians().sin_cos();
+    let roll = [[cr, -sr, 0.0], [sr, cr, 0.0], [0.0, 0.0, 1.0]];
+    let pitch = [[1.0, 0.0, 0.0], [0.0, cp, -sp], [0.0, sp, cp]];
+    let mut out = [[0.0; 3]; 3];
+    for (i, row) in out.iter_mut().enumerate() {
+        for (j, v) in row.iter_mut().enumerate() {
+            *v = (0..3).map(|k| pitch[i][k] * roll[k][j]).sum();
+        }
+    }
+    out
 }
 
 /// The eye's roll against the head in degrees, for the log.
@@ -407,6 +424,9 @@ mod tests {
         let lean = (bottom[0] - top[0]).atan2(bottom[1] - top[1]).to_degrees();
         assert!((lean - 10.0).abs() < 0.01, "{lean}");
         assert!((roll_degrees(&head_rotation(1)) + roll_degrees(&r)).abs() < 1e-9);
+        // Straight ahead lands where the eye's view is centred top to bottom.
+        let ahead = to_eye(&r, [0.0, 0.0]);
+        assert!((ahead[1] + EYE_PITCH_DEGREES.to_radians().tan()).abs() < 0.01 && ahead[0].abs() < 0.06, "{ahead:?}");
     }
 
     #[test]

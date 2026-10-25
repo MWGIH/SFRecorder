@@ -71,7 +71,7 @@ fn parse_args() -> Result<Args> {
             "--card" => a.card = PathBuf::from(value()?),
             "--diagnose" => {
                 let dir = default_output()?.parent().unwrap().to_path_buf();
-                if let Err(e) = sfrecorder::diagnose::run(&a.card, &dir) {
+                if let Err(e) = sfrecorder::diagnose::run(&a.card, &dir, a.eye) {
                     println!("Stopped: {e:#}");
                     std::process::exit(1);
                 }
@@ -135,11 +135,13 @@ fn run() -> Result<()> {
         Shape::Wide => {
             let vr = vr.as_ref().map_err(|e| anyhow::anyhow!("16:9 needs SteamVR's lens data: {e:#}"))?;
             let eye = args.eye.or_else(|| vr.view_eye()).unwrap_or(0);
-            eprintln!("eye {eye} turned {:.2}° against the head, levelled", lens::roll_degrees(&lens::head_rotation(eye)));
+            eprintln!("eye {eye} turned {:.1}° and tilted {:.1}° down against the head, levelled", lens::EYE_ROLL_DEGREES[eye.min(1)], lens::EYE_PITCH_DEGREES);
             let grid = lens::framed(vr, eye, 1920, 1080, 1.0).unwrap_or_else(|e| {
                 eprintln!("16:9 framing failed ({e:#}); recording the middle of the eye without un-warping it");
                 lens::plain(1920, 1080, eye, kms.size, vr.frustum(eye))
             });
+            let [l, r, u, d] = grid.view;
+            eprintln!("recorded view from straight ahead: left {l:.3} right {r:.3} up {u:.3} down {d:.3} (tangents)");
             (1920, 1080, grid)
         }
         Shape::Raw => {
