@@ -29,7 +29,7 @@ fn fourcc_name(f: u32) -> String {
     f.to_le_bytes().iter().map(|&b| b as char).collect()
 }
 
-pub fn run(card: &Path, out_dir: &Path) -> Result<()> {
+pub fn run(card: &Path, out_dir: &Path, eye: Option<usize>) -> Result<()> {
     say!("1. Display");
     let mut kms = Kms::open(card)?;
     say!("   panels {}x{} at {:.2} Hz", kms.size.0, kms.size.1, kms.refresh_hz);
@@ -53,10 +53,10 @@ pub fn run(card: &Path, out_dir: &Path) -> Result<()> {
     say!("2. Lens data");
     let grid = match OpenVr::connect() {
         Ok(vr) => {
-            let eye = vr.view_eye().unwrap_or(0);
+            let eye = eye.or_else(|| vr.view_eye()).unwrap_or(0);
             let f = vr.frustum(eye);
             say!("   eye {eye}, frustum l {:.3} r {:.3} t {:.3} b {:.3}", f.left, f.right, f.top, f.bottom);
-            say!("   eye turned {:.1}° against the head (built in, levelled in 16:9)", lens::roll_degrees(&lens::head_rotation(eye)));
+            say!("   eye turned {:.1}° and tilted {:.1}° down against the head (built in, levelled in 16:9)", lens::EYE_ROLL_DEGREES[eye.min(1)], lens::EYE_PITCH_DEGREES);
             for (u, v) in [(0.5, 0.5), (0.25, 0.5), (0.5, 0.25)] {
                 match vr.distortion(eye, u, v) {
                     Some([r, g, b]) => say!(
@@ -172,6 +172,8 @@ pub fn run(card: &Path, out_dir: &Path) -> Result<()> {
 
 /// Where the grid reads from on the panel, as text.
 fn describe_grid(g: &lens::Grid) {
+    let [l, r, u, d] = g.view;
+    say!("   recorded view from straight ahead: left {l:.3} right {r:.3} up {u:.3} down {d:.3} (tangents)");
     let c = g.at(W / 2, H / 2);
     let (lo, hi) = g.bounds();
     say!("   picture centre reads panel point {:.3},{:.3}; whole picture reads x {:.3}..{:.3}, y {:.3}..{:.3}", c[0], c[1], lo[0], hi[0], lo[1], hi[1]);
