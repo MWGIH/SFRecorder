@@ -235,15 +235,26 @@ pub fn plain(out_w: u32, out_h: u32, eye: usize, panel: (u32, u32), f: Frustum) 
 /// right eye turns the other way.
 pub const EYE_ROLL_DEGREES: [f64; 2] = [-12.0, 12.0];
 
-/// The eye's turn against the head, as a rotation (head = R * eye): a roll
-/// about its own axis only. The eye's view reaching further up than down is
-/// an off-centre view, not a tilted eye: straight ahead is still the eye's
-/// (0, 0). Treating it as a 15.7° downward tilt put the picture's middle
-/// above straight ahead (a centred screen sat low) and made upright edges
-/// splay apart towards the bottom.
+/// How far each eye's picture is tilted down against the head, in degrees.
+/// Two flat-mode recordings of a screen straight ahead pin it down: framed
+/// with a 15.7° tilt the screen sat a little low, with none it sat well
+/// high (and the HUD was cut off at the top). Both point to about 13°.
+pub const EYE_PITCH_DEGREES: f64 = 13.0;
+
+/// The eye's turn against the head, as a rotation (head = R * eye): tilted
+/// down, then rolled about its own axis.
 pub fn head_rotation(eye: usize) -> [[f64; 3]; 3] {
-    let (s, c) = EYE_ROLL_DEGREES[eye.min(1)].to_radians().sin_cos();
-    [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]
+    let (sr, cr) = EYE_ROLL_DEGREES[eye.min(1)].to_radians().sin_cos();
+    let (sp, cp) = (-EYE_PITCH_DEGREES).to_radians().sin_cos();
+    let roll = [[cr, -sr, 0.0], [sr, cr, 0.0], [0.0, 0.0, 1.0]];
+    let pitch = [[1.0, 0.0, 0.0], [0.0, cp, -sp], [0.0, sp, cp]];
+    let mut out = [[0.0; 3]; 3];
+    for (i, row) in out.iter_mut().enumerate() {
+        for (j, v) in row.iter_mut().enumerate() {
+            *v = (0..3).map(|k| pitch[i][k] * roll[k][j]).sum();
+        }
+    }
+    out
 }
 
 /// The eye's roll against the head in degrees, for the log.
@@ -413,15 +424,10 @@ mod tests {
         let lean = (bottom[0] - top[0]).atan2(bottom[1] - top[1]).to_degrees();
         assert!((lean + EYE_ROLL_DEGREES[0]).abs() < 0.01, "{lean}");
         assert!((roll_degrees(&head_rotation(1)) + roll_degrees(&r)).abs() < 1e-9);
-        // Straight ahead stays straight ahead, and upright edges stay
-        // parallel (no keystone): both sides of a centred square lean alike.
+        // Straight ahead lands above the middle of the eye's picture by the tilt.
         let ahead = to_eye(&r, [0.0, 0.0]);
-        assert!(ahead[0].abs() < 1e-9 && ahead[1].abs() < 1e-9, "{ahead:?}");
-        let side = |x: f64| {
-            let (t, b) = (to_eye(&r, [x, -0.5]), to_eye(&r, [x, 0.5]));
-            (b[0] - t[0]).atan2(b[1] - t[1])
-        };
-        assert!((side(-0.5) - side(0.5)).abs() < 1e-9);
+        let up = EYE_PITCH_DEGREES.to_radians().tan();
+        assert!((ahead[1] + up).abs() < 0.01 && ahead[0].abs() < 0.06, "{ahead:?}");
     }
 
     #[test]
