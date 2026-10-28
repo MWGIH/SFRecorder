@@ -1,6 +1,6 @@
 //! sfrecorder: records the Steam Frame's panels until told to stop.
 //!
-//!   sfrecorder [--shape 16:9|raw] [--eye left|right] [--mic] [--hud show|hide] [--out FILE]
+//!   sfrecorder [--shape 16:9|raw] [--eye left|right] [--height DEGREES] [--mic] [--hud show|hide] [--out FILE]
 //!
 //! Started by the dashboard tab, which sends pause/resume/stop on stdin.
 
@@ -42,10 +42,13 @@ struct Args {
     hud: bool,
     out: Option<PathBuf>,
     card: PathBuf,
+    /// Degrees to aim the 16:9 picture above the built-in framing.
+    height: f64,
 }
 
+
 fn parse_args() -> Result<Args> {
-    let mut a = Args { shape: Shape::Wide, eye: None, mic: false, hud: true, out: None, card: PathBuf::from("/dev/dri/card0") };
+    let mut a = Args { shape: Shape::Wide, eye: None, mic: false, hud: true, out: None, card: PathBuf::from("/dev/dri/card0"), height: 0.0 };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = || it.next().with_context(|| format!("{arg} needs a value"));
@@ -69,9 +72,17 @@ fn parse_args() -> Result<Args> {
             "--hud" => a.hud = value()? != "hide",
             "--out" => a.out = Some(PathBuf::from(value()?)),
             "--card" => a.card = PathBuf::from(value()?),
+            "--height" => {
+                let v = value()?;
+                a.height = v.parse::<f64>().ok().filter(|h| h.is_finite() && h.abs() <= 45.0).with_context(|| format!("--height {v}: degrees between -45 and 45"))?;
+            }
+            "--version" => {
+                println!("{}", sfrecorder::VERSION);
+                std::process::exit(0);
+            }
             "--diagnose" => {
                 let dir = default_output()?.parent().unwrap().to_path_buf();
-                if let Err(e) = sfrecorder::diagnose::run(&a.card, &dir, a.eye) {
+                if let Err(e) = sfrecorder::diagnose::run(&a.card, &dir, a.eye, a.height) {
                     println!("Stopped: {e:#}");
                     std::process::exit(1);
                 }
@@ -86,7 +97,7 @@ fn parse_args() -> Result<Args> {
                 std::process::exit(0);
             }
             "-h" | "--help" => {
-                println!("usage: sfrecorder [--shape 16:9|raw] [--eye left|right|auto] [--mic] [--hud show|hide] [--out FILE]");
+                println!("usage: sfrecorder [--shape 16:9|raw] [--eye left|right|auto] [--height DEGREES] [--mic] [--hud show|hide] [--out FILE] [--version]");
                 std::process::exit(0);
             }
             s => bail!("unknown option {s}"),
@@ -135,8 +146,14 @@ fn run() -> Result<()> {
         Shape::Wide => {
             let vr = vr.as_ref().map_err(|e| anyhow::anyhow!("16:9 needs SteamVR's lens data: {e:#}"))?;
             let eye = args.eye.or_else(|| vr.view_eye()).unwrap_or(0);
-            eprintln!("eye {eye} turned {:.1}° and tilted {:.1}° down against the head, levelled", lens::EYE_ROLL_DEGREES[eye.min(1)], lens::EYE_PITCH_DEGREES);
-            let grid = lens::framed(vr, eye, 1920, 1080, 1.0).unwrap_or_else(|e| {
+            eprintln!(
+                "SFRecorder {}: eye {eye} turned {:.1}° and tilted {:.1}° down against the head (height {:+.0}°), levelled",
+                sfrecorder::VERSION,
+                lens::EYE_ROLL_DEGREES[eye.min(1)],
+                lens::EYE_PITCH_DEGREES + args.height,
+                args.height
+            );
+            let grid = lens::framed(vr, eye, 1920, 1080, 1.0, args.height).unwrap_or_else(|e| {
                 eprintln!("16:9 framing failed ({e:#}); recording the middle of the eye without un-warping it");
                 lens::plain(1920, 1080, eye, kms.size, vr.frustum(eye))
             });

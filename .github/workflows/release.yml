@@ -46,6 +46,9 @@ jobs:
         run: scripts/build-ffmpeg.sh
 
       - name: Build SFRecorder against it
+        env:
+          # Shown in the tab and by `sfrecorder --version`.
+          SFRECORDER_VERSION: ${{ github.event.inputs.tag || (github.ref_type == 'tag' && github.ref_name) || (github.ref_name == 'main' && format('v0.1.{0}', github.run_number)) || 'test' }}
         run: PKG_CONFIG_PATH="$PWD/build/ffmpeg/lib/pkgconfig" cargo build --release --locked
 
       - name: Package

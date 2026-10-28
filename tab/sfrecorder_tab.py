@@ -53,7 +53,9 @@ RAW_WARNING = ("Raw records both panels exactly as the headset shows them: lens-
 EYE_HELP = ("Follows Steam's VR View. To change it there: in the SteamVR window, \u2630 (top left) \u203a "
             "Display VR View, then Menu (top left) in the VR View window \u203a pick the eye.")
 
-DEFAULTS = {"shape": "16:9", "mic": "0", "eye": "auto", "hud": "1", "raw_warned": "0"}
+DEFAULTS = {"shape": "16:9", "mic": "0", "eye": "auto", "hud": "1", "raw_warned": "0", "height": "0"}
+# Height: degrees the 16:9 picture aims above SFRecorder's built-in framing.
+HEIGHT_STEP, HEIGHT_LIMIT = 2, 30
 
 FONT_CANDIDATES = [
     "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
@@ -73,6 +75,15 @@ def load_font(size):
         if os.path.exists(path):
             return ImageFont.truetype(path, size)
     return ImageFont.load_default(size)
+
+
+def engine_version():
+    """The installed engine's release, e.g. "v0.1.35" ("" if it can't say)."""
+    try:
+        out = subprocess.run([ENGINE, "--version"], capture_output=True, text=True, timeout=5)
+        return out.stdout.strip() if out.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
 
 
 def read_text(path):
@@ -127,11 +138,16 @@ class Settings:
         self.eye = s.get("eye") if s.get("eye") in ("auto", "left", "right") else "auto"
         self.hud = s.getboolean("hud")
         self.raw_warned = s.getboolean("raw_warned")
+        try:
+            self.height = max(-HEIGHT_LIMIT, min(HEIGHT_LIMIT, s.getint("height")))
+        except ValueError:
+            self.height = 0
 
     def save(self):
         cfg = configparser.ConfigParser()
         cfg["recorder"] = {"shape": self.shape, "mic": "1" if self.mic else "0", "eye": self.eye,
-                           "hud": "1" if self.hud else "0", "raw_warned": "1" if self.raw_warned else "0"}
+                           "hud": "1" if self.hud else "0", "raw_warned": "1" if self.raw_warned else "0",
+                           "height": str(self.height)}
         os.makedirs(CONFIG_DIR, exist_ok=True)
         with open(CONFIG_FILE, "w") as f:
             cfg.write(f)
@@ -166,7 +182,7 @@ class Engine:
 
     def __init__(self, settings, eye):
         args = [ENGINE, "--shape", settings.shape, "--eye", eye or "auto",
-                "--hud", "show" if settings.hud else "hide"]
+                "--hud", "show" if settings.hud else "hide", "--height", str(settings.height)]
         if settings.mic:
             args.append("--mic")
         os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
@@ -207,8 +223,11 @@ class Engine:
         return alive
 
 
+VERSION = engine_version()
+
+
 class Menu:
-    WIDTH, HEIGHT = 800, 900
+    WIDTH, HEIGHT = 800, 1010
     # Gaming on Steam site colours, matching the FPS overlay's tab.
     BG = (0, 0, 0, 255)
     BUTTON = (24, 47, 103, 255)
@@ -280,15 +299,25 @@ class Menu:
         self._choice(draw, 410, "Microphone", "On" if s.mic else "Off", None if locked else "mic",
                      fill=self.ON if s.mic else None)
 
+        if s.shape == "raw":
+            draw.text((60, 535), "Height", font=self.font, fill=GREY, anchor="lm")
+            draw.text((760, 535), "16:9 only", font=self.font, fill=GREY, anchor="rm")
+        else:
+            draw.text((60, 535), "Height", font=self.font, fill=GREY, anchor="lm")
+            self._button(draw, (400, 500, 480, 570), "\u25bc", None if locked else "height-down")
+            draw.text((580, 535), f"{s.height:+d}\u00b0" if s.height else "0\u00b0", font=self.font, fill=WHITE,
+                      anchor="mm")
+            self._button(draw, (680, 500, 760, 570), "\u25b2", None if locked else "height-up")
+
         if overlay == "on":
-            self._choice(draw, 500, "FPS overlay", "In recordings" if s.hud else "Hidden", "hud",
+            self._choice(draw, 590, "FPS overlay", "In recordings" if s.hud else "Hidden", "hud",
                          fill=self.ON if s.hud else None)
         else:
-            draw.text((60, 535), "FPS overlay", font=self.font, fill=GREY, anchor="lm")
-            draw.text((760, 535), "Not installed" if overlay == "missing" else "Off", font=self.font,
+            draw.text((60, 625), "FPS overlay", font=self.font, fill=GREY, anchor="lm")
+            draw.text((760, 625), "Not installed" if overlay == "missing" else "Off", font=self.font,
                       fill=GREY, anchor="rm")
             if overlay == "missing":
-                draw.text((760, 580), "Get it: " + OVERLAY_REPO, font=self.small_font,
+                draw.text((760, 670), "Get it: " + OVERLAY_REPO, font=self.small_font,
                           fill=GREY, anchor="rm")
 
         if status.startswith("!"):
@@ -296,22 +325,25 @@ class Menu:
             lines = wrap(draw, status[2:], self.small_font, 680)[:3]
             lines.append("Details: ~/.cache/sfrecorder/last-recording.log")
             for i, line in enumerate(lines):
-                draw.text((self.WIDTH // 2, 615 + 32 * i), line, font=self.small_font, fill=RED, anchor="mm")
+                draw.text((self.WIDTH // 2, 705 + 32 * i), line, font=self.small_font, fill=RED, anchor="mm")
         else:
-            draw.text((self.WIDTH // 2, 640), status, font=self.font, fill=WHITE, anchor="mm")
-        draw.text((self.WIDTH // 2, 730), "Saved to Videos/SFRecorder", font=self.small_font, fill=GREY, anchor="mm")
-        draw.text((self.WIDTH // 2, 770), "Share them from the SCopy tab", font=self.small_font, fill=GREY,
+            draw.text((self.WIDTH // 2, 730), status, font=self.font, fill=WHITE, anchor="mm")
+        draw.text((self.WIDTH // 2, 820), "Saved to Videos/SFRecorder", font=self.small_font, fill=GREY, anchor="mm")
+        draw.text((self.WIDTH // 2, 860), "Share them from the SCopy tab", font=self.small_font, fill=GREY,
                   anchor="mm")
         if recording:
-            draw.text((self.WIDTH // 2, 840), "Paused while this menu is open", font=self.small_font, fill=YELLOW,
+            draw.text((self.WIDTH // 2, 930), "Paused while this menu is open", font=self.small_font, fill=YELLOW,
                       anchor="mm")
         else:
-            self._button(draw, (110, 805, 390, 870), "Update", "update")
+            self._button(draw, (110, 895, 390, 960), "Update", "update")
             if popup == "uninstall":
-                self._button(draw, (410, 805, 730, 870), "Tap to confirm", "uninstall", fill=self.REC,
+                self._button(draw, (410, 895, 730, 960), "Tap to confirm", "uninstall", fill=self.REC,
                              font=self.small_font)
             else:
-                self._button(draw, (410, 805, 730, 870), "Uninstall", "uninstall")
+                self._button(draw, (410, 895, 730, 960), "Uninstall", "uninstall")
+
+        draw.text((self.WIDTH // 2, self.HEIGHT - 22), "SFRecorder " + (VERSION or "version unknown"), font=self.small_font, fill=GREY,
+                  anchor="mm")
 
         if popup == "eye":
             lines = wrap(draw, EYE_HELP, self.small_font, 600)
@@ -423,6 +455,9 @@ def run():
             popup = "eye" if eye_popup_pinned else None
         elif action == "mic":
             settings.mic = not settings.mic
+        elif action in ("height-up", "height-down"):
+            step = HEIGHT_STEP if action == "height-up" else -HEIGHT_STEP
+            settings.height = max(-HEIGHT_LIMIT, min(HEIGHT_LIMIT, settings.height + step))
         elif action == "update":
             source = read_text(SOURCE_DIR_FILE)
             if engine:

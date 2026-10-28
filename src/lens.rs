@@ -164,13 +164,14 @@ impl Forward {
 /// The 16:9 (or any shape) view of one eye, framed like Steam's recorder:
 /// the largest rectangle of the output's shape centred on the eye's frustum,
 /// scaled by `zoom` (1.0 = that rectangle).
-pub fn framed(vr: &OpenVr, eye: usize, out_w: u32, out_h: u32, zoom: f64) -> Result<Grid> {
+/// `height` (degrees) aims the picture higher than the built-in tilt.
+pub fn framed(vr: &OpenVr, eye: usize, out_w: u32, out_h: u32, zoom: f64, height: f64) -> Result<Grid> {
     let f = vr.frustum(eye);
     if ![f.left, f.right, f.top, f.bottom].iter().all(|v| v.is_finite()) || f.right <= f.left || f.bottom <= f.top {
         bail!("SteamVR's view for this eye makes no sense ({f:?})");
     }
     let forward = Forward::sample(vr, eye)?;
-    let rot = head_rotation(eye);
+    let rot = head_rotation(eye, EYE_PITCH_DEGREES + height);
     let g = fit(&forward, f, rot, eye, out_w, out_h, zoom);
     // Lens data the maths can't invert sends every pixel to the panel's
     // black edge; a recording of nothing is worse than an un-warped crop.
@@ -242,10 +243,10 @@ pub const EYE_ROLL_DEGREES: [f64; 2] = [-12.0, 12.0];
 pub const EYE_PITCH_DEGREES: f64 = 13.0;
 
 /// The eye's turn against the head, as a rotation (head = R * eye): tilted
-/// down, then rolled about its own axis.
-pub fn head_rotation(eye: usize) -> [[f64; 3]; 3] {
+/// `pitch` degrees down, then rolled about its own axis.
+pub fn head_rotation(eye: usize, pitch: f64) -> [[f64; 3]; 3] {
     let (sr, cr) = EYE_ROLL_DEGREES[eye.min(1)].to_radians().sin_cos();
-    let (sp, cp) = (-EYE_PITCH_DEGREES).to_radians().sin_cos();
+    let (sp, cp) = (-pitch).to_radians().sin_cos();
     let roll = [[cr, -sr, 0.0], [sr, cr, 0.0], [0.0, 0.0, 1.0]];
     let pitch = [[1.0, 0.0, 0.0], [0.0, cp, -sp], [0.0, sp, cp]];
     let mut out = [[0.0; 3]; 3];
@@ -419,11 +420,11 @@ mod tests {
         // Uncorrected, upright edges in a left-eye recording leaned with
         // their tops to the left. Levelling must undo exactly that: an
         // upright line in head space reads such a line in the eye.
-        let r = head_rotation(0);
+        let r = head_rotation(0, EYE_PITCH_DEGREES);
         let (top, bottom) = (to_eye(&r, [0.0, -0.5]), to_eye(&r, [0.0, 0.5]));
         let lean = (bottom[0] - top[0]).atan2(bottom[1] - top[1]).to_degrees();
         assert!((lean + EYE_ROLL_DEGREES[0]).abs() < 0.01, "{lean}");
-        assert!((roll_degrees(&head_rotation(1)) + roll_degrees(&r)).abs() < 1e-9);
+        assert!((roll_degrees(&head_rotation(1, EYE_PITCH_DEGREES)) + roll_degrees(&r)).abs() < 1e-9);
         // Straight ahead lands above the middle of the eye's picture by the tilt.
         let ahead = to_eye(&r, [0.0, 0.0]);
         let up = EYE_PITCH_DEGREES.to_radians().tan();

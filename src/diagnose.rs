@@ -29,7 +29,8 @@ fn fourcc_name(f: u32) -> String {
     f.to_le_bytes().iter().map(|&b| b as char).collect()
 }
 
-pub fn run(card: &Path, out_dir: &Path, eye: Option<usize>) -> Result<()> {
+pub fn run(card: &Path, out_dir: &Path, eye: Option<usize>, height: f64) -> Result<()> {
+    say!("SFRecorder {}", crate::VERSION);
     say!("1. Display");
     let mut kms = Kms::open(card)?;
     say!("   panels {}x{} at {:.2} Hz", kms.size.0, kms.size.1, kms.refresh_hz);
@@ -56,7 +57,11 @@ pub fn run(card: &Path, out_dir: &Path, eye: Option<usize>) -> Result<()> {
             let eye = eye.or_else(|| vr.view_eye()).unwrap_or(0);
             let f = vr.frustum(eye);
             say!("   eye {eye}, frustum l {:.3} r {:.3} t {:.3} b {:.3}", f.left, f.right, f.top, f.bottom);
-            say!("   eye turned {:.1}° and tilted {:.1}° down against the head (built in, levelled in 16:9)", lens::EYE_ROLL_DEGREES[eye.min(1)], lens::EYE_PITCH_DEGREES);
+            say!(
+                "   eye turned {:.1}° and tilted {:.1}° down against the head (height {height:+.0}°, levelled in 16:9)",
+                lens::EYE_ROLL_DEGREES[eye.min(1)],
+                lens::EYE_PITCH_DEGREES + height
+            );
             for (u, v) in [(0.5, 0.5), (0.25, 0.5), (0.5, 0.25)] {
                 match vr.distortion(eye, u, v) {
                     Some([r, g, b]) => say!(
@@ -66,7 +71,7 @@ pub fn run(card: &Path, out_dir: &Path, eye: Option<usize>) -> Result<()> {
                     None => say!("   panel {u:.2},{v:.2}: SteamVR gives no lens data"),
                 }
             }
-            match lens::framed(&vr, eye, W, H, 1.0) {
+            match lens::framed(&vr, eye, W, H, 1.0, height) {
                 Ok(g) => {
                     say!("   16:9 framing ok, {:.0}% of points inverted, per-channel colour {}", g.converged * 100.0, g.per_channel);
                     describe_grid(&g);

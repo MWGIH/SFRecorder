@@ -5,6 +5,12 @@
 //! dmabuf, one compute shader turns it into NV12 inside the hardware encoder's
 //! own input buffer, and the encoder writes HEVC.
 
+/// The release this was built as (set by the release workflow), else "dev".
+pub const VERSION: &str = match option_env!("SFRECORDER_VERSION") {
+    Some(v) => v,
+    None => "dev",
+};
+
 pub mod audio;
 pub mod control;
 pub mod diagnose;
